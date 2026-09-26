@@ -179,7 +179,7 @@ int main(int argc, char **argv)
 
 	for(;;){
 		if((nfds = monitor_events(-1)) == -1) break;	
-		if(nfds == EINTR) continue;
+		if(nfds == MONITOR_INTERRUPTED) continue;
 		for(int i = 0; i < nfds; i++){
 
 			struct Request req;

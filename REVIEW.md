@@ -69,3 +69,34 @@ implementation/headers are absent, so the OWN_DB build and database integration
 were not validated. Production certificate configuration, the outbound HTTP/DNS
 client, and concurrency/load behavior need separate review. Existing warnings
 remain in code outside the tested paths.
+
+## Second pass: event monitoring, Unix sockets, and static files
+
+This follow-up commit is based on the first fix commit (`bdadb7b`).
+
+- Replaced positive EINTR monitor results with `MONITOR_INTERRUPTED` (-2), updating
+  all monitor callers. On Linux EINTR is 4, so the old API made callers discard
+  batches containing exactly four ready descriptors.
+- Fixed epoll descriptor leaks when starting a new monitor, cleanup after failed
+  registration, and repeated shutdown closing an unrelated reused descriptor.
+  Registering an already-monitored descriptor now updates its requested events.
+- Unix socket paths are validated before copying. Socket flags now actually enable
+  nonblocking mode and close-on-exec. Failed connect/bind/listen calls close their
+  descriptors while preserving errno. Listener setup refuses to unlink regular
+  files or symlinks. An accept returning EAGAIN no longer tries to register fd -1.
+- Static-file resolution strips query strings and decodes percent escapes before
+  checking path components, rejecting malformed escapes, NULs, traversal, and
+  symlinks. Special files are opened nonblocking and rejected unless regular,
+  preventing FIFO requests from hanging. File reads handle EINTR and short reads.
+
+The new `tests/infrastructure.c` reproduces the former interruption result,
+nonblocking-flag error, and query-string lookup failure. Tests cover four ready
+sockets, interrupted waits, monitor replacement/repeated cleanup, long socket
+paths, failed-socket cleanup, preservation of regular files, decoded traversal,
+query/encoded filenames, symlinks, FIFOs, and interrupted/short file reads. The
+complete test suite passes with ASan/UBSan (leak detection disabled as above).
+Unix SOCK_SEQPACKET setup remains blocked by the execution environment, so Unix
+transport tests substitute socket/bind/listen/connect/accept4 calls with controlled
+results and real socket-pair descriptors; they are not an end-to-end IPC test.
+File tests isolate their document root in a temporary directory using a test-only
+getuid wrapper. A read wrapper forces interrupted/short reads deterministically.

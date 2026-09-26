@@ -23,13 +23,21 @@ static int free_socket_list(int sock);
 
 int start_monitor(int sock)
 {
-	memset(sock_list,-1,sizeof(int) * 256);
-	if ((epollfd = epoll_create1(0)) == -1){
+	int newfd = epoll_create1(EPOLL_CLOEXEC);
+	if (newfd == -1){
 		fprintf(stderr,"(%s): failed to initialize monitor, %s:%d.\n",prog,__FILE__,__LINE__);
 		return -1;
 	}
 
-	if(add_socket_to_monitor(sock, EPOLLIN) == -1) return -1;
+    if(epollfd >= 0) close(epollfd);
+    epollfd = newfd;
+    memset(sock_list, -1, sizeof(sock_list));
+    if(add_socket_to_monitor(sock, EPOLLIN) == -1){
+        int error = errno;
+        stop_monitor();
+        errno = error;
+        return -1;
+    }
 
 	return 0;
 }
@@ -39,7 +47,7 @@ int monitor_events(int timer)
 	errno = 0;
 	nfds = epoll_wait(epollfd, events, MAX_EVENTS, timer);
 	if(nfds == -1){
-		if(errno == EINTR) return errno;
+		if(errno == EINTR) return MONITOR_INTERRUPTED;
 		fprintf(stderr,"(%s): epoll_wait() failed %s:%d.\n",prog,__FILE__,__LINE__);
 		return -1;
 	}
@@ -53,6 +61,8 @@ int monitor_events(int timer)
 int add_socket_to_monitor(int sock,int event)
 {
 	
+	if(sock < 0 || epollfd < 0){ errno = EBADF; return -1; }
+    if(find_sock(sock) == 0) return modify_monitor_event(sock, event);
 	int index = -1;
 
 	if(find_sock(sock) == -1){
@@ -120,13 +130,9 @@ int modify_monitor_event(int sock, int event)
 
 void stop_monitor()
 {
-
-	for(int i =0; i < MAX_SK_LIST; i++){
-		if(sock_list[i] == -1) continue;
-
-		remove_socket_from_monitor(sock_list[i]);
-	}
-	close(epollfd);
+    if(epollfd >= 0) close(epollfd);
+    epollfd = -1;
+    memset(sock_list, -1, sizeof(sock_list));
 }
 
 int is_sock_in_monitor(int sock){

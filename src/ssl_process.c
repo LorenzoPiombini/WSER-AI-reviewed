@@ -132,7 +132,7 @@ int SSL_work_process(int data_sock)
 	for(;;){
 		
 		if((nfds = monitor_events(-1)) == -1) goto teardown_a;
-		if(nfds == EINTR){
+		if(nfds == MONITOR_INTERRUPTED){
 			if(reload_certificate){
 				reload_certificate = 0;
 				SSL_CTX_free(ctx);
@@ -237,7 +237,7 @@ loop:
 				for(;;){
 					/*start monitoring event with a timer of 5 seconds*/
 					if((nfds = monitor_events(5000)) == -1) goto teardown;
-					if(nfds == EINTR){
+					if(nfds == MONITOR_INTERRUPTED){
 						continue; /*change with goto teardwn in prod*/
 					}
 	

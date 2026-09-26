@@ -121,7 +121,7 @@ int HTTP_work_process(int data_sock,int secure)
 	for(;;){
 
 		if((nfds = monitor_events(-1)) == -1) goto teardown;
-		if(nfds == EINTR) continue;
+		if(nfds == MONITOR_INTERRUPTED) continue;
 
 		int i;
 		for(i = 0; i < nfds; i++){
@@ -199,7 +199,7 @@ loop:
 				int nfd =-1,j;
 				for(;;){
 					if((nfd = monitor_events(-1)) == -1) goto teardown;
-					if(nfd == EINTR){
+					if(nfd == MONITOR_INTERRUPTED){
 						continue; /*change with goto teardwn in prod*/
 					}
 

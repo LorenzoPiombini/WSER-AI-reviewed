@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <errno.h>
 #include <string.h>
 #include "load.h"
@@ -34,7 +35,7 @@ static int check_key_in_object(char **allowed,const char *json,struct Json_token
 int load_resource(char *rpath, struct Content *cont)
 {
 
-	if(strstr(rpath,"..")) return -1;
+	if(!rpath || !cont) return -1;
 
 	char *file_path = map_rpath(rpath);
 	if(!file_path) {
@@ -53,7 +54,7 @@ int load_resource(char *rpath, struct Content *cont)
 		char *slash = strchr(part,'/');
 		if (slash) *slash = '\0';
 
-		int flags = O_RDONLY | O_CLOEXEC | O_NOFOLLOW;
+		int flags = O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK;
 		if(slash) flags |= O_DIRECTORY;
 
 		errno = 0;
@@ -73,28 +74,13 @@ int load_resource(char *rpath, struct Content *cont)
 		part = slash + 1;
 	}
 
-	if(lseek(fd,0,SEEK_END) == -1){
-		close(fd);
-		return -1;	
-	}
-
-	off_t size = 0;
-	if((size = lseek(fd,0,SEEK_CUR)) == -1){
-		close(fd);
-		return -1;	
-	}
-
-	if(size < 0 || size > MAX_LOADABLE_FILE){
-		close(fd);
-		return -1;	
-	}
-
-	if(lseek(fd,0,SEEK_SET) == -1){
-		close(fd);
-		return -1;	
-	}
-
-	size_t length = (size_t)size;
+    struct stat st;
+    if(fstat(fd, &st) < 0 || !S_ISREG(st.st_mode) ||
+       st.st_size < 0 || st.st_size > MAX_LOADABLE_FILE){
+        close(fd);
+        return -1;
+    }
+    size_t length = (size_t)st.st_size;
 	char *buf = cont->cnt_st;
 	char *allocated  = NULL;
 
@@ -109,14 +95,15 @@ int load_resource(char *rpath, struct Content *cont)
 		memset(buf,0,length+1);
 	}
 
-	ssize_t r = 0;
-	if((r = read(fd,buf,length)) < 0
-			|| (size_t)r < length){
-		fprintf(stderr,"(%s): cannot read from '%s'.\n",prog,rpath);
-		if(allocated) free(allocated);
-		close(fd);
-		return -1;
-	}
+    size_t received = 0;
+    while(received < length){
+        ssize_t n = read(fd, buf + received, length - received);
+        if(n > 0){ received += (size_t)n; continue; }
+        if(n < 0 && errno == EINTR) continue;
+        free(allocated);
+        close(fd);
+        return -1;
+    }
 
 	buf[length] = '\0';
 	close(fd);
@@ -126,27 +113,41 @@ int load_resource(char *rpath, struct Content *cont)
 }
 
 
+static int url_hex(unsigned char c)
+{
+    if(c >= '0' && c <= '9') return c - '0';
+    if(c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if(c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
 static char *map_rpath(char *rpath)
 {
-	if(*rpath != '/') return NULL;
-
-	static char path[1024] = {0};
-	memset(path,0,1024);
-
-	size_t l = strlen(rpath);
-	size_t l_map = 1;
-	if (l_map == l){
-		if(strncmp("/",rpath,l_map) == 0){
-			size_t inx_l = strlen("/index.html");	
-			strncpy(path,"/index.html",inx_l);
-			return path;
-		} 
-		return NULL;
-	}
-
-	if(l >= sizeof(path)) return NULL;
-	strncpy(path,rpath,l);
-	return path;
+    if(*rpath != '/') return NULL;
+    static char path[1024];
+    size_t end = strcspn(rpath, "?#"), j = 0;
+    for(size_t i = 0; i < end; ++i){
+        unsigned char c = rpath[i];
+        if(c == '%'){
+            if(end - i < 3) return NULL;
+            int high = url_hex(rpath[i+1]), low = url_hex(rpath[i+2]);
+            if(high < 0 || low < 0) return NULL;
+            c = (high << 4) | low;
+            i += 2;
+        }
+        if(c < 0x20 || c == 0x7f || c == '\\' || j + 1 >= sizeof(path)) return NULL;
+        path[j++] = c;
+    }
+    path[j] = 0;
+    /* Check decoded path components, including percent-encoded slashes. */
+    for(char *part = path + 1; *part;){
+        size_t n = strcspn(part, "/");
+        if((n == 1 && part[0] == '.') || (n == 2 && !memcmp(part, "..", 2))) return NULL;
+        part += n;
+        if(*part) ++part;
+    }
+    if(j == 1) memcpy(path, "/index.html", sizeof("/index.html"));
+    return path;
 }
 
 void clear_content(struct Content *cont){

@@ -6,6 +6,7 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/ioctl.h>
 #include <sys/types.h>
 #include <sys/random.h>
@@ -140,63 +141,61 @@ sock_setup:
 	return sock_fd;
 }
 
-int connect_UNIX_socket(int opt, char *sock_path)
+static int unix_address(struct sockaddr_un *addr, const char *path)
 {
-       struct sockaddr_un address_socket_family;
-       memset(&address_socket_family,0,sizeof(struct sockaddr_un));
-   
-       int sock_un = socket(AF_UNIX,SOCK_SEQPACKET,0);
-       if(sock_un == -1) return -1;
-       
-       /*bind to a file_path*/
-       address_socket_family.sun_family = AF_UNIX;
-       strncpy(address_socket_family.sun_path,sock_path,strlen(sock_path)+1);  
-
-       if(opt == SOCK_NONBLOCK){
-	       if(fcntl(sock_un,F_SETFD,O_NONBLOCK) == -1){
-		       return -1;
-	       }
-       }
-
-       errno = 0;
-       int result = connect(sock_un,(const struct sockaddr*) &address_socket_family,sizeof(address_socket_family));
-       if(result == -1) {
-	       if(errno == ECONNREFUSED){
-		       fprintf(stderr," !!!!! you need a bigger que for UNIX_SOCK !!!!!!\n");
-	       }
-	       return -1;
-       }
-
-       return sock_un;
-
+    if(!path || !*path){ errno = EINVAL; return -1; }
+    if(strlen(path) >= sizeof(addr->sun_path)){ errno = ENAMETOOLONG; return -1; }
+    memset(addr, 0, sizeof(*addr));
+    addr->sun_family = AF_UNIX;
+    memcpy(addr->sun_path, path, strlen(path) + 1);
+    return 0;
 }
 
-int listen_UNIX_socket(int opt, char *sock_path) 
+static int close_failed_socket(int fd)
 {
-	struct sockaddr_un address_socket_family;
-	memset(&address_socket_family,0,sizeof(struct sockaddr_un));
+    int error = errno;
+    close(fd);
+    errno = error;
+    return -1;
+}
 
-	int sock_un = socket(AF_UNIX,SOCK_SEQPACKET,0);
-	if(sock_un == -1) return -1;
-	
-	/*bind to a file_path*/
-	address_socket_family.sun_family = AF_UNIX;
-	strncpy(address_socket_family.sun_path,sock_path,strlen(sock_path)+1);	
+int connect_UNIX_socket(int opt, char *sock_path)
+{
+    struct sockaddr_un addr;
+    if(unix_address(&addr, sock_path)) return -1;
+    int flags = SOCK_SEQPACKET | SOCK_CLOEXEC;
+    if(opt == SOCK_NONBLOCK) flags |= SOCK_NONBLOCK;
+    int fd = socket(AF_UNIX, flags, 0);
+    if(fd < 0) return -1;
+    if(connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0){
+        if(opt == SOCK_NONBLOCK && errno == EINPROGRESS) return fd;
+        return close_failed_socket(fd);
+    }
+    return fd;
+}
 
-	if(opt == SOCK_NONBLOCK){
-		if(fcntl(sock_un,F_SETFD,O_NONBLOCK) == -1){
-			return -1;
-		}
-	}
-
-	unlink(sock_path);
-	int result = bind(sock_un,(const struct sockaddr *) &address_socket_family,sizeof(address_socket_family));
-	if(result == -1) return -1;
-
-	/*listen socket*/
-	if(listen(sock_un,20) == -1) return -1;
-	
-	return sock_un;
+int listen_UNIX_socket(int opt, char *sock_path)
+{
+    struct sockaddr_un addr;
+    if(unix_address(&addr, sock_path)) return -1;
+    struct stat st;
+    if(lstat(sock_path, &st) == 0){
+        /* Never remove an unrelated regular file or follow a symlink. */
+        if(!S_ISSOCK(st.st_mode)){ errno = EEXIST; return -1; }
+        if(unlink(sock_path)) return -1;
+    } else if(errno != ENOENT) return -1;
+    int flags = SOCK_SEQPACKET | SOCK_CLOEXEC;
+    if(opt == SOCK_NONBLOCK) flags |= SOCK_NONBLOCK;
+    int fd = socket(AF_UNIX, flags, 0);
+    if(fd < 0) return -1;
+    if(bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) return close_failed_socket(fd);
+    if(listen(fd, 20) < 0){
+        int error = errno;
+        unlink(sock_path);
+        errno = error;
+        return close_failed_socket(fd);
+    }
+    return fd;
 }
 
 static char *convert_query_format_domain_to_string(uint8_t* formatted_domain)
@@ -665,7 +664,6 @@ int wait_for_connections_SSL(int sock_fd,int *cli_sock)
 
 	if((*cli_sock = accept4(sock_fd,&cli_info,&len,SOCK_NONBLOCK)) == -1){
 		if(errno == EAGAIN || errno == EWOULDBLOCK) {
-			if((add_socket_to_monitor(*cli_sock,EPOLLIN | EPOLLET)) == -1) return -1;
 			return errno;
 		}
 		return -1;
@@ -682,7 +680,6 @@ int wait_for_connections(int sock_fd,int *cli_sock, struct Request *req,int mode
 
 	if((*cli_sock = accept4(sock_fd,&cli_info,&len,SOCK_NONBLOCK)) == -1){
 		if(errno == EAGAIN || errno == EWOULDBLOCK) {
-			if((add_socket_to_monitor(*cli_sock,EPOLLIN | EPOLLET)) == -1) return -1;
 			return errno;
 		}
 		return -1;
@@ -1304,7 +1301,8 @@ static int wait_for_activity(SSL *ssl, int w_r)
 		return -1;
 
 	modify_monitor_event(fd,w_r ? EPOLLOUT : EPOLLIN);
-	int n = monitor_events(-1);
+	int n;
+    do { n = monitor_events(-1); } while(n == MONITOR_INTERRUPTED);
 	return n;
 }
 

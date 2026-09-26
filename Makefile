@@ -44,11 +44,15 @@ obj/json-tests: json_parser_test.c obj/json.o
 obj/tls-tests: tests/tls.c $(OBJlibnet)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZERS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
+obj/infrastructure-tests: tests/infrastructure.c obj/load.o $(OBJlibnet)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZERS) $(LDFLAGS) -Wl,--wrap=getuid,--wrap=socket,--wrap=bind,--wrap=listen,--wrap=connect,--wrap=accept4,--wrap=read -o $@ $^ $(LDLIBS)
+
 obj/test-cert.pem:
 	@mkdir -p obj
 	openssl req -x509 -newkey rsa:2048 -nodes -keyout obj/test-key.pem -out $@ -subj /CN=localhost -days 1 2>/dev/null
 
-test: obj/regression obj/json-tests obj/tls-tests obj/test-cert.pem
+test: obj/regression obj/json-tests obj/tls-tests obj/test-cert.pem obj/infrastructure-tests
+	./obj/infrastructure-tests
 	./obj/regression
 	./obj/json-tests
 	./obj/tls-tests obj/test-cert.pem obj/test-key.pem

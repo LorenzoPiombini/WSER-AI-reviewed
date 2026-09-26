@@ -2,6 +2,8 @@
 #define _MONITOR_H_
 
 #define MAX_EVENTS 10
+/* Separate interruptions from all possible positive event counts. */
+#define MONITOR_INTERRUPTED (-2)
 
 #include <sys/epoll.h>
 
