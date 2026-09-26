@@ -1,314 +1,162 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <assert.h>
-#include <errno.h>
+#include <strings.h>
+#include <limits.h>
+#include <stdint.h>
 #include "request.h"
 
-static char prog[] = "wser";
-static int get_headers_block(struct Request *req);
-static int parse_header(char *head, struct Request *req);
-static int get_method(char *method);
 static int map_content_type(struct Request *req);
-static int read_req_raw_bytes(struct Request *req);
 
-int handle_request(struct Request *req)
+static int copy_field(char *dst, size_t cap, const char *src)
 {
-	int h_end = 0;
-	if((h_end = get_headers_block(req)) == -1) return BAD_REQ;	
-
-	char head[h_end+1];
-	memset(head,0,h_end+1);
-
-	if(req->d_req)
-		strncpy(head,req->d_req,h_end);
-	else
-		strncpy(head,req->req,h_end);
-
-
-	if(parse_header(head, req) == -1) return BAD_REQ;
-
-	map_content_type(req);
-	if(req->method == POST){
-		/*we should have a body*/
-		if((req->size - h_end) == 0) 
-			return BDY_MISS;
-
-		if((req->size - h_end) >= STD_REQ_BDY_CNT){
-			req->req_body.d_cont = (char *)calloc(req->size - h_end,sizeof(char));
-			if(!req->req_body.d_cont){
-				fprintf(stderr,"(%s): calloc failed, %s:%d\n",
-						prog,__FILE__,__LINE__-2);
-				return BAD_REQ;
-			}
-		}
-
-		if(((req->size - h_end) - 1) <= 0) return BAD_REQ;
-
-		if(req->d_req){
-			req->req_body.size = req->size - h_end;
-			strncpy(req->req_body.content,&req->d_req[h_end],req->req_body.size);
-		}else{
-			req->req_body.size = req->size - h_end;
-			strncpy(req->req_body.content,&req->req[h_end],req->req_body.size);
-		}
-		return 0;
-	}
-	return 0;
+    size_t n = strlen(src);
+    if(n >= cap) return BAD_REQ;
+    memcpy(dst, src, n + 1);
+    return 0;
 }
 
-static int read_req_raw_bytes(struct Request *req)
+static int get_method(const char *s)
 {
-	if(req->d_req){
-		int i = 0;
-		while(*req->d_req++){
-			if(*req->d_req < 0x20
-					&& (*req->d_req != '\n' || *req->d_req != '\r'))
-				return BAD_REQ;
-			if(*req->d_req == 0x7f)
-				return BAD_REQ;
-
-			i++;
-		}
-
-		if(i < req->size ) 
-			return BAD_REQ;
-	}else{
-		char *r = req->req;
-		int i = 0;
-		while(*r++) {
-			if(*r < 0x20
-					&& (*r != '\n' && *r != '\r'))
-				return BAD_REQ;
-			if(*r == 0x7f)
-				return BAD_REQ;
-
-			i++;
-		}
-
-		if(i < req->size ) 
-			return BAD_REQ;
-	}
-
-	return 0;	
+    static const char *methods[] = {"GET", "HEAD", "PUT", "POST", "DELETE", "CONNECT", "OPTIONS", "TRACE"};
+    for(int i = 0; i < 8; ++i) if(strcmp(s, methods[i]) == 0) return i;
+    return -1;
 }
 
-
-int set_up_request(ssize_t bytes,struct Request *req)
-{	
-	ssize_t n_size = bytes * 2;
-	req->d_req = calloc(n_size,sizeof(char));
-	if(!req->d_req){
-		fprintf(stderr,"(%s): cannot allocate memory for request.\n",prog);
-		return -1;
-	}
-	strncpy(req->d_req,req->req,req->size);	
-	memset(req->req,0,BASE);
-	req->size= n_size;
-	return 0;
-}
-
-void clear_request(struct Request *req)
+static int token_char(unsigned char c)
 {
-	if(req->d_req) free(req->d_req);
-	if(req->req_body.d_cont) free(req->req_body.d_cont);
-	memset(req->req,0,BASE);
-	memset(req->req_body.content,0,STD_REQ_BDY_CNT);
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9') || strchr("!#$%&'*+-.^_`|~", c) != NULL;
 }
 
 static int parse_header(char *head, struct Request *req)
 {
-	char *crlf = NULL;
-	int start = 0;
-	/* 
-	 * bool value for transfer encoding found
-	 * and content length found
-	 * */
-	int te_f = 0, cl_f = 0;
-	while((crlf = strstr(&head[start],"\r"))){
-		if(te_f && cl_f) return BAD_REQ; /*protecting from HTTP request smuggling*/
+    char *end = strstr(head, "\r\n");
+    if(!end) return BAD_REQ;
+    *end = '\0';
+    char *target = strchr(head, ' ');
+    if(!target) return BAD_REQ;
+    *target++ = '\0';
+    char *protocol = strchr(target, ' ');
+    if(!protocol) return BAD_REQ;
+    *protocol++ = '\0';
+    req->method = get_method(head);
+    if(req->method < 0 || !*target ||
+       (strcmp(protocol, "HTTP/1.1") && strcmp(protocol, "HTTP/1.0"))) return BAD_REQ;
+    if(copy_field(req->resource, sizeof(req->resource), target) ||
+       copy_field(req->protocol, sizeof(req->protocol), protocol)) return BAD_REQ;
+    for(const unsigned char *p = (unsigned char *)target; *p; ++p)
+        if(*p <= 0x20 || *p == 0x7f) return BAD_REQ;
 
-		if (start > 0){
-			int end = crlf - head;
-			size_t s = end - start;
-			char t[s+1];
-			memset(t,0,s+1);
-			strncpy(t,&head[start],s);
+    int host_seen = 0, cl_seen = 0;
+    req->cont_length = 0;
+    for(char *line = end + 2; *line; line = end + 2){
+        end = strstr(line, "\r\n");
+        if(!end) return BAD_REQ;
+        if(end == line) break;
+        *end = '\0';
+        char *value = strchr(line, ':');
+        if(!value || value == line) return BAD_REQ;
+        *value++ = '\0';
+        for(const unsigned char *p = (unsigned char *)line; *p; ++p)
+            if(!token_char(*p)) return BAD_REQ;
+        while(*value == ' ' || *value == '\t') ++value;
+        char *tail = end;
+        while(tail > value && (tail[-1] == ' ' || tail[-1] == '\t')) *--tail = '\0';
+        for(const unsigned char *p = (unsigned char *)value; *p; ++p)
+            if((*p < 0x20 && *p != '\t') || *p == 0x7f) return BAD_REQ;
+        if(!strcasecmp(line, "Host")){
+            if(host_seen++ || !*value || copy_field(req->host, sizeof(req->host), value)) return BAD_REQ;
+        } else if(!strcasecmp(line, "Content-Length")){
+            if(cl_seen++ || !*value) return BAD_REQ;
+            size_t n = 0;
+            for(const unsigned char *p = (unsigned char *)value; *p; ++p){
+                if(*p < '0' || *p > '9' || n > (MAX_REQUEST_SIZE - (*p - '0')) / 10) return BAD_REQ;
+                n = n * 10 + *p - '0';
+            }
+            req->cont_length = n;
+        } else if(!strcasecmp(line, "Transfer-Encoding")){
+            /* Chunked request decoding is not implemented. Never guess framing. */
+            return BAD_REQ;
+        } else {
+#define FIELD(name, member) if(!strcasecmp(line, name)) { \
+    if(copy_field(req->member, sizeof(req->member), value)) return BAD_REQ; \
+    continue; }
+            FIELD("Content-Type", cont_type)
+            FIELD("Connection", connection)
+            FIELD("Origin", origin)
+            FIELD("Access-Control-Request-Headers", access_control_request_headers)
+            FIELD("Access-Control-Request-Method", access_control_request_method)
+#undef FIELD
+        }
+    }
+    if(!strcmp(req->protocol, "HTTP/1.1") && !host_seen) return BAD_REQ;
+    return 0;
+}
 
-			char *b = NULL;
-			if((b = strstr(t,"Host:"))){	
-				b += strlen("Host: ");
-				strncpy(req->host,b,strlen(b));
-				*crlf = ' ';
-				start = end + 2;
-				continue;
-			}
+int handle_request(struct Request *req)
+{
+    if(!req || req->size < 0 || (size_t)req->size > MAX_REQUEST_SIZE ||
+       (!req->d_req && (size_t)req->size > sizeof(req->req))) return BAD_REQ;
+    char *raw = req->d_req ? req->d_req : req->req;
+    int h_end = find_headers_end(raw, req->size);
+    if(h_end < 0) return req->size >= MAX_HEADER_SIZE ? BAD_REQ : BDY_MISS;
+    if(h_end > MAX_HEADER_SIZE || memchr(raw, '\0', h_end)) return BAD_REQ;
+    char *head = malloc((size_t)h_end + 1);
+    if(!head) return BAD_REQ;
+    memcpy(head, raw, h_end);
+    head[h_end] = '\0';
+    int status = parse_header(head, req);
+    free(head);
+    if(status != 0) return BAD_REQ;
+    size_t body_size = (size_t)req->cont_length;
+    if(body_size > MAX_REQUEST_SIZE - (size_t)h_end) return BAD_REQ;
+    if((size_t)req->size - h_end < body_size) return BDY_MISS;
+    /* Each connection serves one request; do not absorb trailing requests. */
+    free(req->req_body.d_cont);
+    req->req_body.d_cont = NULL;
+    req->req_body.size = body_size;
+    char *body = req->req_body.content;
+    if(body_size >= sizeof(req->req_body.content)){
+        body = calloc(body_size + 1, 1);
+        if(!body) return BAD_REQ;
+        req->req_body.d_cont = body;
+    }
+    memcpy(body, raw + h_end, body_size);
+    body[body_size] = '\0';
+    if(req->method == GET || req->method == HEAD) map_content_type(req);
+    return 0;
+}
 
-			if((b = strstr(t,"Content-Length:"))){
-				b += strlen("Content-Length: ");
-				char *endptr;
-				errno = 0;
-				req->cont_length = (ssize_t)strtol(b,&endptr,10);
-				if(errno == EINVAL 
-						|| errno == ERANGE
-						|| strncmp(endptr,b,strlen(b)) == 0){
-					printf("string to number conversion failed\n");
-					req->cont_length = 0;
-					return BAD_REQ;
-				}
-				*crlf = ' ';
-				start = end + 2;
-				continue;
-			}
+/* Grow capacity without changing the number of received bytes. */
+int set_up_request(ssize_t bytes, struct Request *req)
+{
+    if(!req || bytes <= 0 || (size_t)bytes > MAX_REQUEST_SIZE || req->size < 0 ||
+       (size_t)req->size > (size_t)bytes) return -1;
+    size_t cap = (size_t)bytes > MAX_REQUEST_SIZE / 2 ? MAX_REQUEST_SIZE : (size_t)bytes * 2;
+    if(req->d_req && req->capacity >= cap) return 0;
+    char *p = realloc(req->d_req, cap);
+    if(!p) return -1;
+    if(!req->d_req) memcpy(p, req->req, req->size);
+    req->d_req = p;
+    req->capacity = cap;
+    return 0;
+}
 
-			if((b = strstr(t,"Transfer-Encoding:"))){
-				if(te_f) return BAD_REQ;
-				b += strlen("Transfer-Encoding: ");
-				strncpy(req->transfer_encoding,b,strlen(b));
-				*crlf = ' ';
-				start = end + 2;
-				te_f = 1;
-				continue;
-			}
-
-			if((b = strstr(t,"Access-Control-Request-Method:"))){
-				b += strlen("Access-Control-Request-Method: ");
-				strncpy(req->access_control_request_method,b,strlen(b));
-				*crlf = ' ';
-				start = end + 2;
-				continue;
-			}
-
-			if((b = strstr(t,"Access-Control-Request-Headers:"))){
-				b += strlen("Access-Control-Request-Headers: ");
-				strncpy(req->access_control_request_headers,b,strlen(b));
-				*crlf = ' ';
-				start = end + 2;
-				continue;
-			}
-
-
-			if((b = strstr(t,"Origin:"))){
-				b += strlen("Origin: ");
-				strncpy(req->origin,b,strlen(b));
-				*crlf = ' ';
-				start = end + 2;
-				continue;
-			}
-
-			if((b = strstr(t,"Connection:"))){
-				b += strlen("Connection: ");
-				strncpy(req->connection,b,strlen(b));
-				*crlf = ' ';
-				start = end + 2;
-				continue;
-			}
-
-			if((b = strstr(t,"Content-Type:"))){
-				b += strlen("Content-Type: ");
-				strncpy(req->cont_type,b,strlen(b));
-				*crlf = ' ';
-				start = end + 2;
-				continue;
-			}
-
-			*crlf = ' ';
-			start = end + 2;
-			continue;
-		}	
-
-		int end = crlf - head;		
-		char t[end+1];
-		memset(t,0,end+1);
-		strncpy(t,head,end);
-		char *tok = strtok(t," ");
-		if ((req->method = get_method(tok)) == -1 ) return BAD_REQ;
-
-		tok = strtok(NULL, " ");
-		size_t tok_l = strlen(tok);
-		if(tok_l > STD_LT_RESOURCE){
-			/* handle this case*/
-		}else{
-			strncpy(req->resource,tok,tok_l);
-		}
-		tok = strtok(NULL," ");
-		tok_l = strlen(tok);
-		if (strncmp(tok,DEFAULT,tok_l) == 0){
-			if(strstr(head,"Host:") == NULL) return BAD_REQ;
-		}	
-		*crlf = ' ';
-		start = end + 2;
-	}
-
-	/*if the requset does not have tranfer-encoding header field
-	 * than it must be all readable ascii char if not, return BAD_REQ*/
-	if(!te_f){
-		if(read_req_raw_bytes(req) != 0)
-			return BAD_REQ;
-	}
-	return 0;
+void clear_request(struct Request *req)
+{
+    if(!req) return;
+    free(req->d_req);
+    free(req->req_body.d_cont);
+    memset(req, 0, sizeof(*req));
 }
 
 int find_headers_end(char *buffer, size_t size)
 {
-	char *start = buffer;
-	int c = 0;
-	while(*buffer != '\r' && ((size_t)(buffer - start) < size)) {
-		buffer++;
-		if(*buffer != '\r') continue; 
-
-		while(*buffer == '\r' || *buffer == '\n'){
-			if((size_t)(buffer - start) == size) break;
-			c++;
-			buffer++;
-		}
-
-		if( c == 4) break;
-		c = 0;
-	}
-
-	if(c < 4) return -1;
-	if(c == 4) return (int)(buffer - start);
-
-	return -1;
-}
-
-static int get_headers_block(struct Request *req)
-{
-	if(req->d_req) return find_headers_end(req->d_req, req->size);
-	
-	return find_headers_end(req->req, req->size);
-}
-
-
-static int get_method(char *method)
-{
-	size_t method_l = strlen(method);
-	if(strlen("GET") == method_l)
-		if(strncmp("GET",method,method_l) == 0) return GET;
-	
-	if(strlen("HEAD") == method_l)
-		if(strncmp("HEAD",method,method_l) == 0) return HEAD;
-
-	if(strlen("POST") == method_l)
-		if(strncmp("POST",method,method_l) == 0) return POST;
-
-	if(strlen("PUT") == method_l)
-		if(strncmp("PUT",method,method_l) == 0) return PUT;
-
-	if(strlen("DELETE") == method_l)
-		if(strncmp("DELETE",method,method_l) == 0) return DELETE;
-	
-	if(strlen("CONNECT") == method_l)
-		if(strncmp("CONNECT",method,method_l) == 0) return CONNECT;
-
-	if(strlen("OPTIONS") == method_l)
-		if(strncmp("OPTIONS",method,method_l) == 0) return OPTIONS;
-		
-	if(strlen("TRACE") == method_l)
-		if(strncmp("TRACE",method,method_l) == 0) return TRACE;
-
-	return -1;
+    if(!buffer || size < 4) return -1;
+    for(size_t i = 0; i <= size - 4 && i <= INT_MAX - 4; ++i)
+        if(memcmp(buffer + i, "\r\n\r\n", 4) == 0) return (int)i + 4;
+    return -1;
 }
 
 static int map_content_type(struct Request *req)

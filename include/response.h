@@ -10,7 +10,7 @@
 #define STD_LEN_HTTP2 7 
 #define STD_BDY_CNT 8192
 #define STD_HD_L 1024
-#define SECONDS_IN_A_DAY 60*24
+#define SECONDS_IN_A_DAY (60 * 60 * 24)
 #define BAD_REQ_MES "{\"error\": \"Bad request\",\"message\": \"Request body could not be read properly.\"}"
 #define SERVER_ER_MES "{\"error\": \"Server internal error\",\"message\": \"contact assistance@artech.com .\"}"
 #define ALLOWED_METHODS "GET, POST, OPTIONS"
@@ -51,6 +51,7 @@ struct Response{
 	struct Header headers;
 	char header_str[STD_HD_L];
 	struct Body body;
+	size_t sent; /* bytes already sent by write_cli_sock */
 };
 
 

@@ -61,7 +61,7 @@ int load_resource(char *rpath, struct Content *cont)
 		if(resource == -1){
 			close(fd);
 			strncpy(cont->cnt_st,NOT_FOUND,strlen(NOT_FOUND)+1);
-			cont->size = strlen(NOT_FOUND) + 1;
+			cont->size = strlen(NOT_FOUND);
 			fprintf(stderr,"(%s): cannot open '%s'.\n",prog,rpath);
 			if(errno == ELOOP) fprintf(stderr,"they were trying to open a link\n");
 			return -1;

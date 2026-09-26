@@ -475,199 +475,72 @@ int DNS_query(char *domain, uint16_t type)
 
 int write_cli_SSL(int cli_sock, struct Response *res, struct Connection_data *cd)
 {
-	int i;
-	for(i = 0; i < MAX_CON_DAT_ARR; i++){
-		if(cd[i].fd == cli_sock) break;
-	}
-
-	assert(i < MAX_CON_DAT_ARR);
-
-	size_t l = strlen(res->header_str);
-	size_t buff_l = res->body.size + l + 1;
-	char *buff = NULL;
-	if( buff_l >= STD_HD_L){
-		errno = 0;
-		buff = calloc(buff_l,sizeof(char));
-		if(!buff){
-			if(errno == ENOMEM)
-				fprintf(stderr,"(%s): not enough memory.\n",prog);	
-			else 
-				fprintf(stderr,"(%s): calloc() failed %s:%d.\n",prog,__FILE__,__LINE__);	
-
-			return -1;
-		}
-
-		strncpy(buff,res->header_str,strlen(res->header_str));
-		if(res->body.d_cont){
-			strncat(buff,res->body.d_cont,res->body.size);
-		}else{
-			if(res->body.size > 0)
-				strncat(buff,res->body.content,res->body.size);
-		}
-	} else {
-		if(res->body.size > 0){
-			strncpy(&res->header_str[strlen(res->header_str)],res->body.content,res->body.size);
-		}
-	}
-
-
-	if(!buff){
-		size_t bwritten;
-		int r = 0;
-		if((r = SSL_write_ex(cd[i].ssl,res->header_str,strlen(res->header_str),&bwritten)) == 0){
-			int err = SSL_get_error(cd[i].ssl,r);
-			if(err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
-				if(modify_monitor_event(cli_sock, err == SSL_ERROR_WANT_WRITE ? EPOLLOUT : EPOLLIN) == -1){
-					fprintf(stderr,"(%s): cannot change event on socket. %s:%d.\n",prog,__FILE__,__LINE__-1);
-					return -1;
-				}
-				cd[i].retry_handshake = NULL;
-				cd[i].retry_read = NULL;
-				cd[i].retry_write = SSL_write_ex;
-				memcpy(&cd[i].res,res,sizeof(struct Response));
-				return SSL_WRITE_E;
-			}else{
-				fprintf(stderr,"the error happens when writying to socket\n");
-				ERR_print_errors_fp(stderr);
-				cd[i].retry_handshake = NULL;
-				cd[i].retry_read = NULL;
-				cd[i].retry_write = NULL;
-				cd[i].close_notify = SSL_shutdown;
-				if(modify_monitor_event(cli_sock,EPOLLIN | EPOLLOUT) == -1){
-					fprintf(stderr,"(%s): cannot change event on socket. %s:%d.\n",prog,__FILE__,__LINE__-1);
-					return -1;
-				}
-				return -1;
-			}
-		}
-	}else{
-		size_t bwritten;
-		int r = 0;
-		if((r = SSL_write_ex(cd[i].ssl,buff,strlen(buff),&bwritten)) == 0){
-			int err = SSL_get_error(cd[i].ssl,r);
-			if(err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
-				if(modify_monitor_event(cli_sock, err == SSL_ERROR_WANT_WRITE ? EPOLLOUT : EPOLLIN) == -1){
-					fprintf(stderr,"(%s): cannot change event on socket. %s:%d.\n",prog,__FILE__,__LINE__-1);
-					return -1;
-				}
-
-				cd[i].retry_handshake = NULL;
-				cd[i].retry_read = NULL;
-				cd[i].retry_write = SSL_write_ex;
-				cd[i].buf = buff;
-				return SSL_WRITE_E;
-			}
-
-			fprintf(stderr,"the error happens when writying to socket\n");
-			ERR_print_errors_fp(stderr);
-			cd[i].retry_handshake = NULL;
-			cd[i].retry_read = NULL;
-			cd[i].retry_write = NULL;
-			cd[i].close_notify = SSL_shutdown;
-			if(modify_monitor_event(cli_sock,EPOLLIN | EPOLLOUT) == -1){
-				fprintf(stderr,"(%s): cannot change event on socket. %s:%d.\n",prog,__FILE__,__LINE__-1);
-				return -1;
-			}
-
-			free(buff);
-			fprintf(stderr,"(%s): cannot write to socket.\n",prog);
-			return -1;
-		}
-		cd[i].fd = -1;
-		free(buff);
-	}
-
-	/*Write was succesful we can shutdown the TLS section*/
-		
-	int r = 0;
-	while((r = SSL_shutdown(cd[i].ssl)) != 1){
-		/*
-		int err = SSL_get_error(cd[i].ssl,r);
-		if(err == SSL_ERROR_WANT_READ 
-			|| err == SSL_ERROR_WANT_WRITE)
-			continue;
-			*/
-			
-
-		if((r = handle_client_IO(cd[i].ssl,r)) == 1)
-			continue;
-		else if(r == 2 || r == 0)
-			break;
-		return -1;
-	}
-	return 0;
+    int i;
+    for(i = 0; i < MAX_CON_DAT_ARR; ++i) if(cd[i].fd == cli_sock) break;
+    if(i == MAX_CON_DAT_ARR || !cd[i].ssl) return -1;
+    struct Connection_data *c = &cd[i];
+    if(!c->buf){
+        if(!res) return -1;
+        size_t h = strlen(res->header_str);
+        if(res->body.size > SIZE_MAX - h) return -1;
+        c->buf_size = h + res->body.size;
+        c->buf_sent = 0;
+        c->buf = malloc(c->buf_size ? c->buf_size : 1);
+        if(!c->buf) return -1;
+        memcpy(c->buf, res->header_str, h);
+        memcpy(c->buf + h, res->body.d_cont ? res->body.d_cont : res->body.content, res->body.size);
+    }
+    while(c->buf_sent < c->buf_size){
+        size_t n = 0;
+        ERR_clear_error();
+        int r = SSL_write_ex(c->ssl, c->buf + c->buf_sent, c->buf_size - c->buf_sent, &n);
+        if(r == 1){ c->buf_sent += n; continue; }
+        int err = SSL_get_error(c->ssl, r);
+        if(err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE){
+            c->retry_read = NULL;
+            c->retry_handshake = NULL;
+            c->retry_write = SSL_write_ex;
+            if(modify_monitor_event(cli_sock, err == SSL_ERROR_WANT_WRITE ? EPOLLOUT : EPOLLIN) == -1) return -1;
+            return SSL_WRITE_E;
+        }
+        c->retry_write = NULL;
+        free(c->buf);
+        c->buf = NULL;
+        return -1;
+    }
+    c->retry_write = NULL;
+    free(c->buf);
+    c->buf = NULL;
+    c->buf_size = c->buf_sent = 0;
+    /* Send close_notify without spinning on a nonblocking peer. */
+    SSL_shutdown(c->ssl);
+    return 0;
 }
 
 int write_cli_sock(int cli_sock, struct Response *res)
 {
-	size_t l = strlen(res->header_str);
-	size_t buff_l = res->body.size + l + 1;
-	char *buff = NULL;
-	if( buff_l >= STD_HD_L){
-		errno = 0;
-		buff = calloc(buff_l,sizeof(char));
-		if(!buff){
-			if(errno == ENOMEM)
-				fprintf(stderr,"(%s): not enough memory.\n",prog);	
-			else 
-				fprintf(stderr,"(%s): calloc() failed %s:%d.\n",prog,__FILE__,__LINE__);	
-
-			return -1;
-		}
-
-		strncpy(buff,res->header_str,strlen(res->header_str));
-		if(res->body.d_cont){
-			strncat(buff,res->body.d_cont,res->body.size);
-		}else{
-			if(res->body.size > 0)
-				strncat(buff,res->body.content,res->body.size);
-		}
-	} else {
-		if(res->body.size > 0)
-			strncat(res->header_str,res->body.content,res->body.size);
-	}
-
-
-	if(!buff){
-		errno = 0;
-		if(write(cli_sock,res->header_str,strlen(res->header_str)) == -1){
-			if(errno == EAGAIN || errno == EWOULDBLOCK){
-				if(modify_monitor_event(cli_sock,EPOLLOUT | EPOLLIN) == -1) return -1;
-				return errno;
-			}
-
-			fprintf(stderr,"(%s): cannot write to socket.\n",prog);
-			return -1;
-		}
-	}else{
-		/*
-		 * buff_l - 1 is to avoid to write '\0' to the browser which will cause issues
-		 * */
-		int nb = 0;
-		if(ioctl(cli_sock,FIONBIO,&nb) == -1){
-			fprintf(stderr,"ioctl failed! ");
-
-		}	
-		long long w = 0;
-		long long written = 0;
-		long long s = (long long)strlen(buff);
-		while(((w = write(cli_sock,&buff[written],s)) < s) || w == -1){
-			if(w != -1){
-				s -= w;
-				written += w;
-				if (written == (long long) strlen(buff))
-					break;
-				continue;
-			}
-
-			free(buff);
-			fprintf(stderr,"(%s): cannot write to socket.\n",prog);
-			return -1;
-		}
-		printf("wrote %lld bytes to the socket.\n",w);
-		free(buff);
-	}
-	return 0;
+    size_t header_size = strlen(res->header_str);
+    if(res->body.size > SIZE_MAX - header_size) return -1;
+    size_t total = header_size + res->body.size;
+    if(res->sent > total) return -1;
+    while(res->sent < total){
+        const char *p;
+        size_t remaining;
+        if(res->sent < header_size){
+            p = res->header_str + res->sent;
+            remaining = header_size - res->sent;
+        } else {
+            size_t offset = res->sent - header_size;
+            p = (res->body.d_cont ? res->body.d_cont : res->body.content) + offset;
+            remaining = res->body.size - offset;
+        }
+        ssize_t n = send(cli_sock, p, remaining, MSG_NOSIGNAL);
+        if(n > 0){ res->sent += (size_t)n; continue; }
+        if(n < 0 && errno == EINTR) continue;
+        if(n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return EAGAIN;
+        return -1;
+    }
+    return 0;
 }
 
 
@@ -721,156 +594,67 @@ void clean_connecion_data(struct Connection_data *cd, int sock)
 	}
 }
 
-int read_cli_sock_SSL(int cli_sock,struct Request *req,struct Connection_data *cd)
+int read_cli_sock_SSL(int cli_sock, struct Request *req, struct Connection_data *cd)
 {
-	int i;
-	for(i = 0; i < MAX_CON_DAT_ARR;i++){
-		if(cd[i].fd == cli_sock) break;
-	}
-
-	if(i >= MAX_CON_DAT_ARR){
-		return NO_CON_DATA;
-	}	
-	
-	if(cd[i].retry_handshake){
-		/*retry handshake*/
-		int r = 0;
-		if((r = cd[i].retry_handshake(cd[i].ssl)) <= 0){ 
-			int err = SSL_get_error(cd[i].ssl,r);
-			if(err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE){ 
-				if(modify_monitor_event(cli_sock,EPOLLOUT | EPOLLIN) == -1) return -1;
-				return HANDSHAKE;	
-			}else{
-				fprintf(stderr,"the error happens when retrying handshake\n");
-				ERR_print_errors_fp(stderr);
-				remove_socket_from_monitor(cli_sock);
-				cd[i].fd = -1;
-				cd[i].ssl = NULL;
-				cd[i].retry_handshake = NULL;
-				cd[i].retry_read = NULL;
-				return -1;
-			}
-		}
-		cd[i].retry_handshake = NULL;
-		int result;
-		size_t bread = 0;
-		if((result = SSL_read_ex(cd[i].ssl,req->req,BASE,&bread)) == 0) {
-			int err = SSL_get_error(cd[i].ssl,result);
-			if(err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
-				if(modify_monitor_event(cli_sock,EPOLLOUT | EPOLLIN) == -1) return -1;
-				cd[i].retry_read = SSL_read_ex;
-				return SSL_READ_E; 
-			}else if (bread == BASE){
-				fprintf(stderr,"the issue is not enogh space in the buffer\n");
-				ERR_print_errors_fp(stderr);
-				remove_socket_from_monitor(cli_sock);
-				cd[i].fd = -1;
-				cd[i].ssl = NULL;
-				cd[i].retry_handshake = NULL;
-				cd[i].retry_read = NULL;
-				return -1;
-			}else{
-				fprintf(stderr,"the error happens when reading SSL after handshake\n");
-				ERR_print_errors_fp(stderr);
-				remove_socket_from_monitor(cli_sock);
-				cd[i].fd = -1;
-				cd[i].ssl = NULL;
-				cd[i].retry_handshake = NULL;
-				cd[i].retry_read = NULL;
-				return -1;
-			}
-		}
-		return 0;
-	}
-
-	if(cd[i].retry_read){ 
-		int result;
-		size_t bread = 0;
-		if((result = cd[i].retry_read(cd[i].ssl,req->req,BASE,&bread)) == 0){
-			int err = SSL_get_error(cd[i].ssl,result);
-			if(err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
-				if(modify_monitor_event(cli_sock,EPOLLOUT | EPOLLIN) == -1) return -1;
-				return SSL_READ_E; 
-			}else{
-				fprintf(stderr,"the error happens when retrying read\n");
-				ERR_print_errors_fp(stderr);
-				remove_socket_from_monitor(cli_sock);
-				cd[i].fd = -1;
-				cd[i].ssl = NULL;
-				cd[i].retry_handshake = NULL;
-				cd[i].retry_read = NULL;
-				return -1;
-			}
-		}
-
-		cd[i].retry_read = NULL;
-		if(bread == BASE){
-			fprintf(stderr,"buffer is not big enough\n");
-			/*TODO: read the socket again*/
-		}
-		ssize_t sign_bread = 0;
-		if(handle_request(req) == BAD_REQ){
-			if(req->method == -1) return BAD_REQ;
-			if(req->size < (ssize_t)BASE) return BAD_REQ;
-
-			if(req->size == (ssize_t)BASE){
-				if(set_up_request(bread,req) == -1) return -1;
-
-				ssize_t move = req->size;
-				if((sign_bread = read(cli_sock,req->d_req +  move,req->size)) == -1){
-					if(errno == EAGAIN || errno == EWOULDBLOCK) {
-						int e = errno;
-						if((add_socket_to_monitor(cli_sock,EPOLLIN | EPOLLET)) == -1) return -1;
-						return e;
-					}
-					fprintf(stderr,"(%s): cannot read data from socket",prog);
-					return -1;
-				}
-			}
-		}
-
-
-		return 0;
-	}
-	return 0;
+    int i;
+    for(i = 0; i < MAX_CON_DAT_ARR; ++i) if(cd[i].fd == cli_sock) break;
+    if(i == MAX_CON_DAT_ARR || !cd[i].ssl) return NO_CON_DATA;
+    struct Connection_data *c = &cd[i];
+    if(!SSL_is_init_finished(c->ssl)){
+        ERR_clear_error();
+        int r = SSL_accept(c->ssl);
+        if(r != 1){
+            int err = SSL_get_error(c->ssl, r);
+            if(err != SSL_ERROR_WANT_READ && err != SSL_ERROR_WANT_WRITE) return -1;
+            c->retry_handshake = SSL_accept;
+            if(modify_monitor_event(cli_sock, err == SSL_ERROR_WANT_WRITE ? EPOLLOUT : EPOLLIN) == -1) return -1;
+            return HANDSHAKE;
+        }
+        c->retry_handshake = NULL;
+    }
+    for(;;){
+        int status = handle_request(req);
+        if(status != BDY_MISS){ c->retry_read = NULL; return status; }
+        size_t cap = req->d_req ? req->capacity : sizeof(req->req);
+        if(req->size < 0 || (size_t)req->size > cap) return BAD_REQ;
+        if((size_t)req->size == cap){
+            if(cap >= MAX_REQUEST_SIZE) return BAD_REQ;
+            if(set_up_request(cap, req)) return -1;
+            cap = req->capacity;
+        }
+        char *raw = req->d_req ? req->d_req : req->req;
+        size_t n = 0;
+        ERR_clear_error();
+        int r = SSL_read_ex(c->ssl, raw + req->size, cap - (size_t)req->size, &n);
+        if(r == 1){ req->size += n; continue; }
+        int err = SSL_get_error(c->ssl, r);
+        if(err != SSL_ERROR_WANT_READ && err != SSL_ERROR_WANT_WRITE) return -1;
+        c->retry_read = SSL_read_ex;
+        if(modify_monitor_event(cli_sock, err == SSL_ERROR_WANT_WRITE ? EPOLLOUT : EPOLLIN) == -1) return -1;
+        return SSL_READ_E;
+    }
 }
 
-int read_cli_sock(int cli_sock,struct Request *req)
+int read_cli_sock(int cli_sock, struct Request *req)
 {
-	ssize_t bread = 0;	
-	errno = 0;
-	if((bread = read(cli_sock,req->req,BASE)) == -1){
-		if(errno == EAGAIN || errno == EWOULDBLOCK) {
-			return errno;
-			/*if((add_socket_to_monitor(cli_sock,EPOLLIN | EPOLLOUT)) == -1) return -1;*/
-		}
-
-		fprintf(stderr,"(%s): cannot read data from socket -> %s\n",prog,strerror(errno));
-		return -1;
-	}
-
-	req->size = bread;
-	if(handle_request(req) == BAD_REQ){
-		if(req->method == -1) return BAD_REQ;
-		if(req->size < (ssize_t)BASE) return BAD_REQ;
-
-		if(req->size == (ssize_t)BASE){
-			if(set_up_request(bread,req) == -1) return -1;
-
-			ssize_t move = req->size;
-			if((bread = read(cli_sock,req->d_req +  move,req->size)) == -1){
-				if(errno == EAGAIN || errno == EWOULDBLOCK) {
-					int e = errno;
-					if((add_socket_to_monitor(cli_sock,EPOLLIN | EPOLLET)) == -1) return -1;
-					return e;
-				}
-				fprintf(stderr,"(%s): cannot read data from socket",prog);
-				return -1;
-			}
-		}
-	}
-
-	return 0;
+    for(;;){
+        int status = handle_request(req);
+        if(status != BDY_MISS) return status;
+        size_t cap = req->d_req ? req->capacity : sizeof(req->req);
+        if(req->size < 0 || (size_t)req->size > cap) return BAD_REQ;
+        if((size_t)req->size == cap){
+            if(cap >= MAX_REQUEST_SIZE) return BAD_REQ;
+            if(set_up_request(cap, req)) return -1;
+            cap = req->capacity;
+        }
+        char *raw = req->d_req ? req->d_req : req->req;
+        ssize_t n = recv(cli_sock, raw + req->size, cap - (size_t)req->size, 0);
+        if(n > 0){ req->size += n; continue; }
+        if(n == 0) return BAD_REQ;
+        if(errno == EINTR) continue;
+        if(errno == EAGAIN || errno == EWOULDBLOCK) return EAGAIN;
+        return -1;
+    }
 }
 
 int wait_for_connections_SSL(int sock_fd,int *cli_sock)

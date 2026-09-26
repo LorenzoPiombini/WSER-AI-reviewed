@@ -24,9 +24,15 @@ int generate_response(struct Response *res, int status, struct Content *cont, st
 	char *h = create_response_message(res,status,cont,req);
 	if (!h) return -1;
 
- 	strncpy(res->header_str,h,strlen(h));
-	if(cont)
-		if(parse_body(cont,res) == -1) return -1;
+	snprintf(res->header_str, sizeof(res->header_str), "%s", h);
+    res->sent = 0;
+	if(cont && status != 301 && status != 500 && (req->method != OPTIONS || status != 200)){
+        if(parse_body(cont,res) == -1) return -1;
+    } else if(status == 400 && !cont){
+        memcpy(res->body.content, BAD_REQ_MES, sizeof(BAD_REQ_MES) - 1);
+        res->body.size = sizeof(BAD_REQ_MES) - 1;
+    }
+    if(req->method == HEAD) res->body.size = 0;
 
 	return 0;
 }
@@ -55,6 +61,9 @@ static char *create_response_message(struct Response *res, int status, struct Co
 		return h;
 	case 500:
 		if(server_error_header(h) == -1) return NULL;
+        memcpy(res->body.content, SERVER_ER_MES, sizeof(SERVER_ER_MES) - 1);
+        res->body.size = sizeof(SERVER_ER_MES) - 1;
+        return h;
 	default:
 		break;
 	}
@@ -77,7 +86,7 @@ static char *create_response_message(struct Response *res, int status, struct Co
 					"\r\n",res->headers.protocol_vs, res->headers.status, res->headers.reason_phrase,
 					"Date", res->headers.date,
 					"Content-Type",req->cont_type,
-					"Content-Length",cont->size,
+					"Content-Length",(cont ? cont->size : 0),
 					"Connection",res->headers.connection,
 					"Cache-Control","max-age=10800") == -1){
 
@@ -90,7 +99,7 @@ static char *create_response_message(struct Response *res, int status, struct Co
 						"%s: %s\r\n"\
 						"\r\n", res->headers.protocol_vs, res->headers.status, res->headers.reason_phrase,
 						"Date", res->headers.date,
-						"Content-Length",cont->size,
+						"Content-Length",(cont ? cont->size : 0),
 						"Content-Type",req->cont_type) == -1){
 				return NULL;
 			}
@@ -107,7 +116,7 @@ static char *create_response_message(struct Response *res, int status, struct Co
 						"\r\n",res->headers.protocol_vs, res->headers.status, res->headers.reason_phrase,
 						"Date", res->headers.date,
 						"Content-Type",req->cont_type,
-						"Content-Length",cont->size,
+						"Content-Length",(cont ? cont->size : 0),
 						"Connection",res->headers.connection) == -1){
 
 				return NULL;
@@ -119,7 +128,7 @@ static char *create_response_message(struct Response *res, int status, struct Co
 						"%s: %s\r\n"\
 						"\r\n", res->headers.protocol_vs, res->headers.status, res->headers.reason_phrase,
 						"Date", res->headers.date,
-						"Content-Length",cont->size,
+						"Content-Length",(cont ? cont->size : 0),
 						"Content-Type",req->cont_type) == -1){
 				return NULL;
 			}
@@ -138,7 +147,7 @@ static int set_up_headers(struct Header *headers, int status, size_t body_size)
 		char *date = date_formatter();
 		if(!date) return -1;
 		strncpy(headers->date,date,50); 
-		strncpy(headers->connection,"keep-alive",50);
+		strncpy(headers->connection,"close",50);
 	}
 
 	if (body_size > 0) headers->content_lenght = body_size;
@@ -360,9 +369,9 @@ static int parse_body(struct Content *cont, struct Response *res)
 {
 	if(cont->size < STD_BDY_CNT){
 		if(cont->cnt_dy)
-			strncpy(res->body.content,cont->cnt_dy,cont->size);
+			memcpy(res->body.content,cont->cnt_dy,cont->size);
 		else
-			strncpy(res->body.content,cont->cnt_st,cont->size);
+			memcpy(res->body.content,cont->cnt_st,cont->size);
 		
 		res->body.size = cont->size;
 		return 0;
@@ -371,41 +380,30 @@ static int parse_body(struct Content *cont, struct Response *res)
 	res->body.d_cont = calloc(cont->size+1,sizeof(char));
 	if(!res->body.d_cont) return -1;
 
-	strncpy(res->body.d_cont,cont->cnt_dy,cont->size);
+	memcpy(res->body.d_cont,cont->cnt_dy,cont->size);
 	res->body.size = cont->size;
 
 	return 0;
 }
 static int not_found_header(char *header, struct Request *req, struct Response *res, struct Content *cont)
 {
-
-	if(!cont){
-		if(snprintf(header,1024,"%s %d %s\r\n"\
-					"Date: %s\r\n"\
-					"Content-Type: %s\r\n"\
-					"Connection: %s\r\n"\
-					"\r\n%s",res->headers.protocol_vs, 404, "Not Found",res->headers.date,
-					req->cont_type,res->headers.connection,NOT_FOUND) == -1){
-			return -1;
-		}
-	}else{
-		if(snprintf(header,1024,"%s %d %s\r\n"\
-					"Date: %s\r\n"\
-					"Content-Type: %s\r\n"\
-					"Connection: %s\r\n"\
-					"\r\n",res->headers.protocol_vs, 404, "Not Found",res->headers.date,
-					"application-json",res->headers.connection) == -1){
-			return -1;
-		}
-	}
-	return 0;
+    (void)req;
+    size_t size = cont ? cont->size : sizeof(NOT_FOUND) - 1;
+    if(!cont){
+        memcpy(res->body.content, NOT_FOUND, size);
+        res->body.size = size;
+    }
+    int n = snprintf(header, STD_HD_L,
+        "HTTP/1.1 404 Not Found\r\nDate: %s\r\nContent-Type: text/html\r\n"
+        "Content-Length: %zu\r\nConnection: close\r\n\r\n", res->headers.date, size);
+    return n < 0 || n >= STD_HD_L ? -1 : 0;
 }
 
 static int bad_request_header(char *header,struct Content *cont)
 {
 	if(snprintf(header,1024,"%s %d %s\r\n"\
 				"Content-Type: %s\r\n"\
-				"Content-lenght: %ld\r\n\r\n","HTTP/1.1", 400, "Bad request",
+				"Content-Length: %ld\r\n\r\n","HTTP/1.1", 400, "Bad request",
 				"application/json",
 				cont == NULL ? strlen(BAD_REQ_MES) : cont->size) == -1){
 		fprintf(stderr,"(%s): cannot form BAD RESPONSE.",prog);
@@ -417,8 +415,8 @@ static int bad_request_header(char *header,struct Content *cont)
 static int server_error_header(char *header){
 	if(snprintf(header,1024,"%s %d %s\r\n"\
 				"Content-Type: %s\r\n"\
-				"Content-lenght: %ld\r\n\r\n%s","HTTP/1.1", 500, "Internal Server Error",
-				"application/json",strlen(SERVER_ER_MES),SERVER_ER_MES) == -1){
+				"Content-Length: %ld\r\n\r\n","HTTP/1.1", 500, "Internal Server Error",
+				"application/json",strlen(SERVER_ER_MES)) == -1){
 		fprintf(stderr,"(%s): cannot form 500 RESPONSE.",prog);
 		return -1;
 	}
@@ -439,13 +437,14 @@ static int moved_permanently_header(char *header,struct Request *r)
 
 static int options_response_header(char *header, int status)
 {
-	char *mess = NULL;
+	char *mess = "Response";
 	if(status == 200) mess = "OK";
 	if(snprintf(header,1024,"%s %d %s\r\n"\
 				"Access-Control-Allow-Origin: %s\r\n"\
 				"Access-Control-Allow-Methods: %s, %s\r\n"\
 				"Access-Control-Allow-Headers: %s\r\n"\
-				"Access-Control-Max-Age: %u\r\n",
+				"Access-Control-Max-Age: %u\r\n"\
+                "Content-Length: 0\r\n\r\n",
 				"HTTP/1.1", status,mess,
 				ORIGIN_DEF,"GET","OPTIONS",
 				"Content-type",SECONDS_IN_A_DAY) == -1){
@@ -465,7 +464,7 @@ static char *date_formatter()
 	if(!d) return NULL;
 
 	
-	if(snprintf(date,50,"%s, %d %s %d %d:%d:%s GMT",day_parser(d->tm_wday),
+	if(snprintf(date,50,"%s, %02d %s %d %02d:%02d:%s GMT",day_parser(d->tm_wday),
 				d->tm_mday,month_parser(d->tm_mon), d->tm_year + 1900,
 				d->tm_hour,d->tm_min,second_parser(d->tm_sec)) == -1) return NULL;
 	

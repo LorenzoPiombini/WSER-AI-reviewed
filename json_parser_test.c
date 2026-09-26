@@ -139,22 +139,16 @@ int main()
 	
 	for(size_t j = 0; j < sizeof(tests) / sizeof(tests[0]); j++){
 		uint8_t dst[4] = {0}; 
-		int r = encode_json_unicode(tests[j].input,dst,4,sizeof(dst));
-		if(r != tests[j].expected_len){
-			printf("Fail \\u%s: is failing\n",tests[j].input);
-			continue;
-		}
+		int r = encode_json_unicode((const uint8_t *)tests[j].input,dst,4,sizeof(dst));
+		assert(r == tests[j].expected_len);
 
 		if(r == -1) {
-			printf("PASS \\u%s: is failing\n",tests[j].input);
+			printf("PASS \\u%s: rejected surrogate\n",tests[j].input);
 			continue;
 		}
 
-		if(memcmp(dst,tests[i].expected,tests[i].expected_len) != 0){
-			printf("FAIL \\u%s: is failing\n",tests[j].input);
-			continue;
-		}
-	
+		assert(memcmp(dst,tests[j].expected,tests[j].expected_len) == 0);
+
 		printf("PASS \\u%s\n",tests[j].input);
 	}
 	

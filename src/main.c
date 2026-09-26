@@ -73,7 +73,7 @@ int main(int argc, char **argv)
 		if(ssl_handle_child == 0){
 			int data_sock = -1;
 			if((data_sock = listen_UNIX_socket(SOCK_NONBLOCK,INT_PROC_SOCK_SSL)) == -1){
-				kill(ssl_handle_child,SIGINT);
+				if(ssl_handle_child > 0) kill(ssl_handle_child,SIGINT);
 				exit(1);
 				return -1;
 			}
@@ -130,7 +130,7 @@ int main(int argc, char **argv)
 
 	pid_t port_80_handle_child = fork();
 	if(port_80_handle_child == -1){
-		kill(ssl_handle_child,SIGINT);
+		if(ssl_handle_child > 0) kill(ssl_handle_child,SIGINT);
 		stop_listening(con);
 		return -1;
 	}
@@ -140,7 +140,7 @@ int main(int argc, char **argv)
 	if(port_80_handle_child == 0){
 		int data_sock = -1;
 		if((data_sock = listen_UNIX_socket(SOCK_NONBLOCK,INT_PROC_SOCK_PORT_EIGTHY_CERT_REN)) == -1){
-			kill(ssl_handle_child,SIGINT);
+			if(ssl_handle_child > 0) kill(ssl_handle_child,SIGINT);
 			exit(1);
 			return -1;
 		}
@@ -151,7 +151,7 @@ int main(int argc, char **argv)
 			exit(1);
 
 		HTTP_work_process(data_sock,secure);
-		kill(ssl_handle_child,SIGINT);
+		if(ssl_handle_child > 0) kill(ssl_handle_child,SIGINT);
 		kill(getppid(),SIGINT);
 		stop_listening(con);
 		exit(1);
@@ -239,7 +239,7 @@ int main(int argc, char **argv)
 					continue;
 				}
 			}
-			if((r = wait_for_connections(con80,&cli_sock,&req,SINGLE_PROC)) == -1) break;
+			if((r = wait_for_connections(con,&cli_sock,&req,MULTI_PROC)) == -1) break;
 			if(r == EAGAIN || r == EWOULDBLOCK) continue;
 
 			memcpy(CMSG_DATA(cmsgp), &cli_sock, sizeof(int));
@@ -1194,7 +1194,7 @@ bad_request:
 
 	/*
 	   if(ssl_handle_child != -1)
-	   kill(ssl_handle_child,SIGINT);
+	   if(ssl_handle_child > 0) kill(ssl_handle_child,SIGINT);
 	   */
 
 client:

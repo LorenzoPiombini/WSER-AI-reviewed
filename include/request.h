@@ -1,6 +1,12 @@
 #ifndef _REQUEST_H_
 #define _REQUEST_H_ 1
 
+#include <stddef.h>
+#include <sys/types.h>
+
+#define MAX_HEADER_SIZE (16 * 1024)
+#define MAX_REQUEST_SIZE (1024U * 1024U)
+
 #define STD_REQ_BDY_CNT	8192
 #define MIN_HEAD_FIELD 50
 #define BASE 1024*2
@@ -37,6 +43,7 @@ struct Request{
 	char req[BASE];
 	char *d_req;
 	ssize_t size;
+	size_t capacity; /* dynamic raw request capacity */
 	int method;
 	char protocol[MIN_HEAD_FIELD];
 	char host[MIN_HEAD_FIELD];

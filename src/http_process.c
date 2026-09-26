@@ -205,6 +205,7 @@ loop:
 
 					for(j = 0; j < nfd; j++){
 						int r = http_step(events[j].data.fd,&req);
+                        if(r == -1) goto teardown;
 						if(r == EAGAIN || r == EWOULDBLOCK) break;
 #ifdef OWN_DB
 						if(!secure){
@@ -297,12 +298,13 @@ static int http_step(int sock,struct Request *req)
 static int process_request(struct Request *req, int cli_sock,int result_of_http_step,int secure, int db_sock)
 {
 
-	if(result_of_http_step == BAD_REQ) goto bad_request;
-
 	struct Content cont = {0};
 	struct Response res = {0};
+
+	if(result_of_http_step == BAD_REQ) goto bad_request;
 	switch(req->method){
 		case GET:
+        case HEAD:
 			if(secure){
 				if(strstr(req->resource,AUTO_CERT_RENEWAL)){
 					/*load the file, and send it*/
@@ -403,10 +405,16 @@ static int process_request(struct Request *req, int cli_sock,int result_of_http_
 				break;
 			}
 			/* Load content */	
-			if((strstr(req->resource,".js")
+			if(
+#ifdef OWN_DB
+                    (strstr(req->resource,".js")
 						|| strstr(req->resource,".html")
 						|| strstr(req->resource,".css")
-						|| (strlen(req->resource) == 1 && (strncmp(req->resource,"/",1) == 0)))){
+						|| (strlen(req->resource) == 1 && (strncmp(req->resource,"/",1) == 0)))
+#else
+                    1
+#endif
+            ){
 				if(load_resource(req->resource,&cont) == -1){
 					/*send not found response*/
 					if(generate_response(&res,404,&cont,req) == -1) break;

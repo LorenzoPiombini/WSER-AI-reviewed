@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <errno.h>
 #include <stdlib.h>
+#include <limits.h>
 #include "json.h"
 
 
@@ -14,13 +15,7 @@ static int parse_literal(const char  *json,size_t len,struct Json_token *t, size
 
 int json_parser(const char *json, size_t len,struct Json_token *tokens, size_t max_tokens)
 {
-	if(len > 0 
-			&& *json != BEGIN_OBJECT 
-			&& *json != BEGIN_ARRAY 
-			&& *json != H_TAB
-			&& *json != SPACE
-			&& *json != NEW_LINE
-			&& *json != CARRIAGE_RETURN) return -1;
+	if(!json || !tokens || len == 0 || len > INT_MAX) return JSON_INVALID_ERR;
 
 	int state = -1;
 	int stack[JSON_MAX_DEPTH];
@@ -31,15 +26,18 @@ int json_parser(const char *json, size_t len,struct Json_token *tokens, size_t m
 
 	skip_ws(json,len,&i);
 	while(i < len){
-		if(tk_count >= (int)max_tokens) return JSON_TK_LIMIT_ERR;
-		if(depth >= JSON_MAX_DEPTH) return JSON_DEPTH_LIMIT_ERR;
+
 
 		switch(json[i]){
 		case '{':
 		case '[':
 		{
 
-			if(state == KEY || state == KEY_OR_CLOSING_OBJECT || state == END) return JSON_INVALID_ERR;
+			if(state != -1 && state != VALUE && state != VALUE_OR_CLOSING_OBJECT)
+                return JSON_INVALID_ERR;
+            if(depth >= JSON_MAX_DEPTH) return JSON_DEPTH_LIMIT_ERR;
+            if((size_t)tk_count >= max_tokens) return JSON_TK_LIMIT_ERR;
+			tokens[tk_count] = (struct Json_token){0};
 
 			tokens[tk_count].type = json[i] == '{' ? OBJECT_JS : ARRAY_JS;
 			tokens[tk_count].start = i;
@@ -71,7 +69,7 @@ int json_parser(const char *json, size_t len,struct Json_token *tokens, size_t m
 			tokens[stack[depth]].end = i + 1;
 			if(expect == OBJECT_JS) tokens[stack[depth]].size /= 2;
 			int p = tokens[stack[depth]].parent;
-			if(p == -1 && tokens[stack[depth]].type == OBJECT_JS) 
+			if(p == -1)
 				state = END;
 			else
 				state = COMMA_OR_CLOSING_OBJ;
@@ -89,7 +87,8 @@ int json_parser(const char *json, size_t len,struct Json_token *tokens, size_t m
 			if(state == KEY || state == KEY_OR_CLOSING_OBJECT) state = COLON;
 			if(state == VALUE || state == VALUE_OR_CLOSING_OBJECT) state = COMMA_OR_CLOSING_OBJ;
 
-			if(tk_count >= (int) max_tokens) return JSON_TK_LIMIT_ERR;
+			if((size_t)tk_count >= max_tokens) return JSON_TK_LIMIT_ERR;
+			tokens[tk_count] = (struct Json_token){0};
 			tokens[tk_count].parent = (depth > 0) ? stack[depth -1] : -1;
 			if(depth > 0) tokens[stack[depth-1]].size++;
 			if(parse_string(json,len,&tokens[tk_count],&i) < 0) return JSON_INVALID_ERR;
@@ -105,25 +104,24 @@ int json_parser(const char *json, size_t len,struct Json_token *tokens, size_t m
 
 			if(json[i] == ':') state = VALUE;
 			if(json[i] == ','){
-				int e = tokens[tokens[tk_count-1].parent].end;
-				if( e == 0 && tokens[tokens[tk_count-1].parent].type == ARRAY_JS) 
-					state = VALUE;
-				else
-					state = KEY;
+                if(depth == 0) return JSON_INVALID_ERR;
+                state = tokens[stack[depth - 1]].type == ARRAY_JS ? VALUE : KEY;
 			}
 
 			size_t j = i;
 			j++;
 			skip_ws(json,len,&j);
+			if(j >= len) return JSON_INVALID_ERR;
 			if(json[j] == ']' || json[j] == '}' || json[j] == ':') return -1;
 
 			i++;
 			break;
 		}
 		default: /*number or literal*/
-			if(state != VALUE) return JSON_INVALID_ERR;
+			if(state != VALUE && state != VALUE_OR_CLOSING_OBJECT) return JSON_INVALID_ERR;
 			if(json[i] == 0x2D || (json[i] >= 0x30 && json[i] <= 0x39)){
-				if(tk_count >= (int) max_tokens) return JSON_TK_LIMIT_ERR;
+				if((size_t)tk_count >= max_tokens) return JSON_TK_LIMIT_ERR;
+			tokens[tk_count] = (struct Json_token){0};
 				tokens[tk_count].parent = (depth > 0) ? stack[depth -1] : -1;
 
 				if(depth > 0) tokens[stack[depth-1]].size++;
@@ -131,7 +129,8 @@ int json_parser(const char *json, size_t len,struct Json_token *tokens, size_t m
 				if(parse_number(json,len,&tokens[tk_count],&i) < 0) return JSON_INVALID_ERR;
 				tk_count++;
 			}else{
-				if(tk_count >= (int) max_tokens) return JSON_TK_LIMIT_ERR;
+				if((size_t)tk_count >= max_tokens) return JSON_TK_LIMIT_ERR;
+			tokens[tk_count] = (struct Json_token){0};
 				tokens[tk_count].parent = (depth > 0) ? stack[depth -1] : -1;
 
 				if(depth > 0) tokens[stack[depth-1]].size++;
@@ -146,7 +145,7 @@ int json_parser(const char *json, size_t len,struct Json_token *tokens, size_t m
 	}
 
 
-	if(depth != 0) return JSON_INVALID_ERR;
+	if(depth != 0 || state != END) return JSON_INVALID_ERR;
 	return tk_count;
 }
 
@@ -197,7 +196,7 @@ static int parse_string(const char  *json,size_t len,struct Json_token *t, size_
 			case 'u':
 				if(k + 4 >= len) return JSON_INVALID_ERR;
 				int j = 1;
-				while(j<=4) if(!isxdigit(json[k + j++])) return JSON_INVALID_ERR;
+				while(j<=4) if(!isxdigit((unsigned char)json[k + j++])) return JSON_INVALID_ERR;
 
 				k += 5;
 				break;
@@ -280,81 +279,87 @@ int is_token_empty(struct Json_token *t)
 		&& t->end == 0 && t->size == 0 && t->parent == 0;
 }
 
-int decode_json_escape(const char* src, size_t slen,char *dst,size_t dlen)
+static int hex4(const uint8_t *src, size_t len, uint32_t *value)
 {
-	
-	if(dlen > slen) return -1;
-	for(size_t i = 0, j = 0; i < slen; i++){
-		switch(src[i]){
-		case '\\':
-		{
-			size_t k = i + 1;
-			switch(src[k]){
-			case '"': 	if ((j + 1) < dlen) dst[j++] = '"';  i++;break;
-			case '/': 	if ((j + 1) < dlen) dst[j++] = '/';  i++;break;
-			case '\\': 	if ((j + 1) < dlen) dst[j++] = '\\'; i++;break;
-			case 'b': 	if ((j + 1) < dlen) dst[j++] = '\b'; i++;break;
-			case 'f': 	if ((j + 1) < dlen) dst[j++] = '\f'; i++;break;
-			case 'n': 	if ((j + 1) < dlen) dst[j++] = '\n'; i++;break;
-			case 'r': 	if ((j + 1) < dlen) dst[j++] = '\r'; i++;break;
-			case 't': 	if ((j + 1) < dlen) dst[j++] = '\t'; i++;break;
-			case 'u': 	
-			{
-				int r = 0;
-				if ((r = encode_json_unicode((const uint8_t*)&src[k+1],&dst[j],slen - (k+1),dlen - j)) == -1) return -1;
-				j += r;
-				i += 5;
-				break;
-			}
-			default:
-				dst[j++] = src[k];
-				break;
-			}
-			break;
-		}
-		default:
-			dst[j++] = src[i];
-			break;
-		}
-	}
-
-	return 0;
+    if(!src || len < 4) return -1;
+    uint32_t n = 0;
+    for(size_t i = 0; i < 4; ++i){
+        unsigned c = src[i], digit;
+        if(c >= '0' && c <= '9') digit = c - '0';
+        else if(c >= 'a' && c <= 'f') digit = c - 'a' + 10;
+        else if(c >= 'A' && c <= 'F') digit = c - 'A' + 10;
+        else return -1;
+        n = (n << 4) | digit;
+    }
+    *value = n;
+    return 0;
 }
 
-int encode_json_unicode(const uint8_t *src, uint8_t *dst,size_t slen,size_t dlen)
+static int utf8(uint32_t cp, uint8_t *dst, size_t dlen)
 {
-	if(slen < 4) return -1;
-	uint8_t bridge[7] = {0};
-	bridge[0] = '0';
-	bridge[1] = 'x';
-	memcpy(&bridge[2],src,4);
+    if(!dst || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) return -1;
+    size_t n = cp <= 0x7f ? 1 : cp <= 0x7ff ? 2 : cp <= 0xffff ? 3 : 4;
+    if(dlen < n) return -1;
+    if(n == 1) dst[0] = cp;
+    else {
+        uint32_t v = cp;
+        for(size_t i = n - 1; i > 0; --i){
+            dst[i] = 0x80 | (v & 0x3f);
+            v >>= 6;
+        }
+        dst[0] = (n == 2 ? 0xc0 : n == 3 ? 0xe0 : 0xf0) | v;
+    }
+    return (int)n;
+}
 
-	/*convert the unicode point from json to hex*/	
-	errno = 0;
-	long hex = strtol(bridge,NULL,16);
-	if(errno == ERANGE || errno == EINVAL) return -1;
-		
-	if(hex <= 0x7F){
-		if(dlen < 1) return -1;
-		*dst = (uint8_t)hex;
-		return 1;
-	}
-	
-	if(hex >=0x80 && hex <= 0x7FF){
-		if(dlen < 2) return -1;
-		dst[0] = (uint8_t)(0xC0 | ((hex >> 6) & 0x1F));
-		dst[1] = (uint8_t)(0x80 | (hex & 0x3F));
-		return 2;
-	}
-		
-	if(hex >= 0xD800 && hex <= 0xDFFF) return -1;
-	if(hex >=0x800 && hex <= 0xFFFF){
-		if(dlen < 3) return -1;
-		dst[0] = (uint8_t)(0xE0 | ((hex >> 12) & 0x0F));
-		dst[1] = (uint8_t)(0x80 | ((hex >> 6) & 0x3F));
-		dst[2] = (uint8_t)(0x80 | (hex & 0x3F));
-		return 3;
-	}
-	
-	return -1;
+/* Writes raw bytes (including embedded NULs), without a C-string terminator.
+ * Returns 0 on success, -1 for malformed escapes or insufficient capacity. */
+int decode_json_escape(const char *src, size_t slen, char *dst, size_t dlen)
+{
+    if((!src && slen) || (!dst && slen)) return -1;
+    size_t j = 0;
+    for(size_t i = 0; i < slen; ++i){
+        unsigned char c = src[i];
+        if(c == '\\'){
+            if(++i == slen) return -1;
+            switch(src[i]){
+            case '"': c = '"'; break;
+            case '/': c = '/'; break;
+            case '\\': c = '\\'; break;
+            case 'b': c = '\b'; break;
+            case 'f': c = '\f'; break;
+            case 'n': c = '\n'; break;
+            case 'r': c = '\r'; break;
+            case 't': c = '\t'; break;
+            case 'u': {
+                uint32_t cp;
+                if(hex4((const uint8_t *)src + i + 1, slen - i - 1, &cp)) return -1;
+                i += 4;
+                if(cp >= 0xd800 && cp <= 0xdbff){
+                    uint32_t low;
+                    if(slen - i - 1 < 6 || src[i+1] != '\\' || src[i+2] != 'u' ||
+                       hex4((const uint8_t *)src + i + 3, 4, &low) ||
+                       low < 0xdc00 || low > 0xdfff) return -1;
+                    cp = 0x10000 + ((cp - 0xd800) << 10) + low - 0xdc00;
+                    i += 6;
+                }
+                int n = utf8(cp, (uint8_t *)dst + j, dlen - j);
+                if(n < 0) return -1;
+                j += n;
+                continue;
+            }
+            default: return -1;
+            }
+        } else if(c < 0x20 || c == '"') return -1;
+        if(j == dlen) return -1;
+        dst[j++] = c;
+    }
+    return 0;
+}
+
+int encode_json_unicode(const uint8_t *src, uint8_t *dst, size_t slen, size_t dlen)
+{
+    uint32_t cp;
+    if(hex4(src, slen, &cp)) return -1;
+    return utf8(cp, dst, dlen);
 }

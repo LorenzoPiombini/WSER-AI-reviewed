@@ -2,6 +2,9 @@
 #ifndef _JSON_H_
 #define _JSON_H_ 1
 
+#include <stddef.h>
+#include <stdint.h>
+
 #define JSON_MAX_DEPTH 20
 #define JSON_MAX_TOKENS 512
 #define JSON_END_ARRAY (0 | 0x02000000)
@@ -61,6 +64,8 @@ struct Json_token{
 
 
 int json_parser(const char *json, size_t len,struct Json_token *tokens, size_t max_tokens);
+/* Decode unquoted string contents to raw bytes; no terminator is appended. */
+int decode_json_escape(const char *src, size_t slen, char *dst, size_t dlen);
 int encode_json_unicode(const uint8_t *src, uint8_t *dst,size_t slen,size_t dlen);
 int write_actual_json_tokens_to_mem(char *buf,size_t buf_size, struct Json_token *t,size_t token_size);
 int is_token_empty(struct Json_token *t);

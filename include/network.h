@@ -115,6 +115,8 @@ struct Connection_data{
 	int (*close_notify)(SSL *);
 	SSL *ssl;
 	char *buf;
+	size_t buf_size;
+	size_t buf_sent;
 	struct Response res;
 };
 
