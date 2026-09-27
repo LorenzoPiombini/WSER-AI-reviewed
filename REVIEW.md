@@ -150,3 +150,20 @@ Rebased onto `fd47edd` (Fedora Makefile changes). The Makefile is preserved
 byte-for-byte, including the Fedora detection and database linker changes.
 Signal tests use the separate `tests/run-signals.sh` runner; this patch does
 not add targets to or change recipes in the Makefile.
+
+## Production validation runner
+
+`sh tests/run-regressions.sh` builds the HTTP, JSON, static-file, Unix transport,
+monitor and TLS regression suites from current sources in a temporary directory.
+It avoids the current `make test` infrastructure recipe's missing shell
+continuation before `else`; the Makefile is deliberately unchanged. Run
+`sh tests/run-signals.sh` separately for the Linux process-tree shutdown tests.
+Both runners passed ASan/UBSan in this hardening pass with LeakSanitizer disabled
+because of the execution environment's process-inspection restriction.
+
+These tests do not establish authenticated ERP access or company isolation.
+The current request structure/DB dispatch does not enforce employee sessions,
+roles or tenant membership. Before using customer data, implement those checks
+before worker dispatch and test both unauthorized and cross-company requests.
+The UI/login integration and company deployment model still need to be supplied.
+See DB-reviewed-by-AI/PRODUCTION.md for the related storage and release gates.
