@@ -30,7 +30,9 @@ char prog[] = "wser";
 int main(int argc, char **argv)
 {	
 	int secure = 0;
-	if(argc > 2) goto client; 
+	if(argc > 2) goto client;
+
+    if(handle_sig_main_process() == -1) return -1;
 
 	if(argc > 1 && *argv[1] == 's') secure = 1;
 
@@ -63,7 +65,7 @@ int main(int argc, char **argv)
 
 	pid_t ssl_handle_child = -1;
 	if(secure){
-		ssl_handle_child = fork();
+		ssl_handle_child = server_fork();
 		if(ssl_handle_child == -1){
 			stop_listening(con);
 			return -1;
@@ -71,9 +73,11 @@ int main(int argc, char **argv)
 
 		/*start SSL handle process*/
 		if(ssl_handle_child == 0){
+            close(con);
+            if(con80 >= 0) close(con80);
 			int data_sock = -1;
 			if((data_sock = listen_UNIX_socket(SOCK_NONBLOCK,INT_PROC_SOCK_SSL)) == -1){
-				if(ssl_handle_child > 0) kill(ssl_handle_child,SIGINT);
+				if(ssl_handle_child > 0) signal_server_process(ssl_handle_child,SIGINT);
 				exit(1);
 				return -1;
 			}
@@ -84,7 +88,6 @@ int main(int argc, char **argv)
 				exit(1);
 
 			SSL_work_process(data_sock);
-			stop_listening(con);
 			exit(1);
 		}
 
@@ -128,9 +131,9 @@ int main(int argc, char **argv)
 	cmsgp->cmsg_len = CMSG_LEN(sizeof(int));
 
 
-	pid_t port_80_handle_child = fork();
+	pid_t port_80_handle_child = server_fork();
 	if(port_80_handle_child == -1){
-		if(ssl_handle_child > 0) kill(ssl_handle_child,SIGINT);
+		if(ssl_handle_child > 0) signal_server_process(ssl_handle_child,SIGINT);
 		stop_listening(con);
 		return -1;
 	}
@@ -138,9 +141,11 @@ int main(int argc, char **argv)
 
 	/*start 80(HTTP) and cert renewal handle process*/
 	if(port_80_handle_child == 0){
+        close(con);
+        if(con80 >= 0) close(con80);
 		int data_sock = -1;
 		if((data_sock = listen_UNIX_socket(SOCK_NONBLOCK,INT_PROC_SOCK_PORT_EIGTHY_CERT_REN)) == -1){
-			if(ssl_handle_child > 0) kill(ssl_handle_child,SIGINT);
+			if(ssl_handle_child > 0) signal_server_process(ssl_handle_child,SIGINT);
 			exit(1);
 			return -1;
 		}
@@ -151,16 +156,14 @@ int main(int argc, char **argv)
 			exit(1);
 
 		HTTP_work_process(data_sock,secure);
-		if(ssl_handle_child > 0) kill(ssl_handle_child,SIGINT);
-		kill(getppid(),SIGINT);
-		stop_listening(con);
+		if(ssl_handle_child > 0) signal_server_process(ssl_handle_child,SIGINT);
+		signal_server_parent(SIGINT);
 		exit(1);
 	}
 
 	
 	http_proc = port_80_handle_child;
 	hdl_sock = con;
-	if(handle_sig_main_process() == -1) return -1;
 
 	if(start_monitor(con) == -1) {
 		fprintf(stderr,"(%s): monitor event startup failed.\n",prog);
@@ -272,7 +275,7 @@ int main(int argc, char **argv)
 	return 0;
 	/*real end of main if used as a server*/
 #if 0
-			pid_t child = fork();
+			pid_t child = server_fork();
 			if(child == -1){
 
 				}
@@ -562,7 +565,7 @@ bad_request:
 
 				if(r == EAGAIN || r == EWOULDBLOCK) continue;
 
-				pid_t child = fork();
+				pid_t child = server_fork();
 				if(child == -1){
 					/*server error*/
 				}
@@ -661,7 +664,7 @@ bad_request:
 									break;
 								}	
 								if(ws){
-									kill(ssl_handle_child,SIGHUP);
+									signal_server_process(ssl_handle_child,SIGHUP);
 									clear_request(&req);
 									clear_response(&res);
 									stop_listening(cli_sock);
@@ -673,7 +676,7 @@ bad_request:
 								exit(1);
 							}
 
-							kill(ssl_handle_child,SIGHUP);
+							signal_server_process(ssl_handle_child,SIGHUP);
 							clear_request(&req);
 							clear_response(&res);
 							stop_listening(cli_sock);
@@ -763,7 +766,7 @@ bad_request:
 					if((r = read_cli_sock(events[i].data.fd,&req)) == -1) break;
 					if(r == EAGAIN || r == EWOULDBLOCK) continue;
 
-					pid_t child = fork();
+					pid_t child = server_fork();
 					if(child == -1){
 						continue;
 					}
@@ -863,7 +866,7 @@ bad_request:
 													break;
 												}
 												if(ws){
-													kill(ssl_handle_child,SIGHUP);
+													signal_server_process(ssl_handle_child,SIGHUP);
 													clear_request(&req);
 													clear_response(&res);
 													stop_listening(events[i].data.fd);
@@ -875,7 +878,7 @@ bad_request:
 												exit(1);
 											}
 
-											kill(ssl_handle_child,SIGHUP);
+											signal_server_process(ssl_handle_child,SIGHUP);
 											clear_request(&req);
 											clear_response(&res);
 											stop_listening(events[i].data.fd);
@@ -1020,7 +1023,7 @@ bad_request:
 										break;
 									}
 									if(ws){
-										kill(ssl_handle_child,SIGHUP);
+										signal_server_process(ssl_handle_child,SIGHUP);
 										clear_request(&req);
 										clear_response(&res);
 										stop_listening(events[i].data.fd);
@@ -1032,7 +1035,7 @@ bad_request:
 									exit(1);
 								}
 
-								kill(ssl_handle_child,SIGHUP);
+								signal_server_process(ssl_handle_child,SIGHUP);
 								clear_request(&req);
 								clear_response(&res);
 								stop_listening(events[i].data.fd);
@@ -1194,7 +1197,7 @@ bad_request:
 
 	/*
 	   if(ssl_handle_child != -1)
-	   if(ssl_handle_child > 0) kill(ssl_handle_child,SIGINT);
+	   if(ssl_handle_child > 0) signal_server_process(ssl_handle_child,SIGINT);
 	   */
 
 client:

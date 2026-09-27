@@ -100,3 +100,53 @@ transport tests substitute socket/bind/listen/connect/accept4 calls with control
 results and real socket-pair descriptors; they are not an end-to-end IPC test.
 File tests isolate their document root in a temporary directory using a test-only
 getuid wrapper. A read wrapper forces interrupted/short reads deterministically.
+
+## Signal-system fix
+
+Observed shutdown defects in the reviewed code:
+
+- HTTP's SIGTERM/SIGINT handler printed and returned, never terminating HTTP.
+- DB's SIGTERM handler depended on db_proc, assigned only in the parent's private
+  address space after fork; the database child inherited the old -1 value.
+- TLS installed a three-argument sa_sigaction without SA_SIGINFO, then read
+  info->si_pid. The handler also returned without terminating the process.
+- Main killed TLS before TLS could stop its DB child. Listener descriptors were
+  inherited by service children, so survivors could retain bound TCP ports.
+- Signal handlers called stdio and application cleanup routines; these are not
+  appropriate in an asynchronous signal handler. Some PID paths admitted the
+  broadcast/process-group semantics of kill(-1, ...) or kill(0, ...).
+- Auto-reaping request children then tracking them by numeric PID allowed stale
+  PID reuse in timeout logic.
+
+The fix removes PID-based shutdown broadcasts. All server forks arm kernel
+parent-death termination, including DB and request forks; an explicit parent
+identity check covers parent exit before registration. Main installs handlers
+before forking. SIGINT/SIGTERM immediately exit; the kernel closes descriptors
+and terminates attached descendants. All explicit kill calls pass through a
+helper rejecting PID <= 1. Upward signalling verifies the recorded parent.
+Request-child status uses waitpid instead of kill(pid, 0), with no automatic
+reaping, retaining PID ownership until collected. At the request-worker limit,
+connections are rejected instead of asserting after spawning an untracked child.
+
+Validation: tests/signals.c uses real Linux processes and the actual handlers/
+fork helper. It checks all four role handlers, ignored SIGPIPE, TLS-only SIGHUP,
+main-only SIGTERM/SIGINT/SIGKILL and ordinary exit, signalling all matching roles,
+termination of the six-process tree (four services plus two request workers),
+TCP-port release, and survival of an unrelated process. Each shutdown mode runs
+three times. A prctl wrapper delays only parent-death registration to force the
+startup race; the real prctl operation is still called. The child must exit
+before executing worker code. The complete ASan/UBSan test suite passes, with
+LeakSanitizer disabled for this execution environment.
+
+This validates the process lifecycle independently of the absent external DB
+implementation and production TLS certificates. It does not demonstrate a
+literal machine reboot or database transaction recovery. No system-wide kill,
+process-group kill, or pkill command is executed by the tests. This patch builds
+on the two earlier fix commits.
+
+### Reissued signal patch
+
+Rebased onto `fd47edd` (Fedora Makefile changes). The Makefile is preserved
+byte-for-byte, including the Fedora detection and database linker changes.
+Signal tests use the separate `tests/run-signals.sh` runner; this patch does
+not add targets to or change recipes in the Makefile.

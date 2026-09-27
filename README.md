@@ -46,3 +46,40 @@ terminator, returns 0 on success / -1 on error, and supports UTF-16 surrogate
 pairs in escapes.
 
 See `REVIEW.md` for the fixes and validation boundaries of this review.
+
+## Stopping and restarting the server (Linux)
+
+Send SIGTERM to the PID running `main.c`:
+
+```sh
+./db s &
+server_pid=$!
+# Later, before restarting:
+kill -TERM "$server_pid"
+```
+
+All server forks use `server_fork`. Each child arms Linux PR_SET_PDEATHSIG with
+SIGKILL and verifies that its original parent is still alive. Therefore main's
+termination cascades to HTTP, TLS, the database worker, and request workers,
+including when main is killed with SIGKILL. This is immediate termination, not
+request draining or a graceful database flush. The external database code must
+provide its own recovery guarantees for interrupted writes; that code is not in
+this repository. External library forks or credential changes require separate
+review because Linux does not preserve the parent-death setting in those cases.
+
+SIGINT and SIGTERM handlers call only `_exit`. SIGPIPE is ignored so a broken
+client connection becomes an I/O error. TLS SIGHUP requests certificate reload
+through a `volatile sig_atomic_t` flag. Other roles ignore SIGHUP. Children close
+inherited TCP listening descriptors immediately, leaving main as their owner.
+Use the main PID to stop one instance; a command-line pattern can match several
+instances and their workers. Old processes still running the previous binary do
+not gain this behavior until restarted with the newly compiled executable.
+
+Run the signal-specific tests independently of the Makefile:
+
+```sh
+./tests/run-signals.sh
+```
+
+In containers that restrict LeakSanitizer, use
+`ASAN_OPTIONS=detect_leaks=0 ./tests/run-signals.sh`.

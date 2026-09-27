@@ -1,201 +1,91 @@
 #include <signal.h>
 #include <unistd.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <errno.h>
+#include <sys/prctl.h>
+#include <sys/wait.h>
 #include "handlesig.h"
-#include "monitor.h"
-#include "network.h"
-#include "default.h"
 
-static char prog[] = "wser";
 int hdl_sock = -1;
 int ssl_sock = -1;
 int db_sock = -1;
 int http_sock = -1;
-int reload_certificate = 0; /*CA certificate automation*/
+volatile sig_atomic_t reload_certificate = 0;
 pid_t db_proc = -1;
 pid_t ssl_proc = -1;
 pid_t http_proc = -1;
+static pid_t server_parent = -1;
 
-
-static void handler_main_process(int signo);
-static void handler_ssl_process(int signo, siginfo_t *info,void*);
-static void handler_http_process(int signo);
-static void handler_db_process(int signo);
-
-int handle_sig_main_process()
+static void terminate_process(int signo)
 {
-	/*set up signal handler*/
-	struct sigaction act;
-	memset(&act,0,sizeof(struct sigaction));
-
-	struct sigaction act_child_process;
-	memset(&act_child_process,0,sizeof(struct sigaction));
-	act.sa_handler = &handler_main_process;
-	act_child_process.sa_handler = SIG_IGN;
-	act_child_process.sa_flags = SA_NOCLDWAIT;
-
-	if(/*sigaction(SIGSEGV, &act, NULL) == -1 ||*/
-			sigaction(SIGINT,&act,NULL) == -1 || 
-			sigaction(SIGPIPE,&act,NULL) == -1 ||
-			sigaction(SIGTERM,&act,NULL) == -1 ||
-			sigaction(SIGCHLD,&act_child_process,NULL) == -1){
-		fprintf(stderr,"(%s): cannot handle the signal.\n",prog);
-		return -1;
-	}
-	return 0;
+    /* No stdio, allocator, OpenSSL, epoll bookkeeping, or stale PID lists here.
+     * The kernel closes descriptors and terminates our attached children. */
+    _exit(128 + signo);
 }
 
-int handle_sig_http_process()
+static void request_certificate_reload(int signo)
 {
-
-	/*set up signal handler*/
-	struct sigaction act;
-	memset(&act,0,sizeof(struct sigaction));
-
-	struct sigaction act_child_process;
-	memset(&act_child_process,0,sizeof(struct sigaction));
-	act.sa_handler = &handler_http_process;
-	act_child_process.sa_handler = SIG_IGN;
-	act_child_process.sa_flags = SA_NOCLDWAIT;
-
-	if(/*sigaction(SIGSEGV, &act, NULL) == -1 ||*/
-			sigaction(SIGINT,&act,NULL) == -1 || 
-			sigaction(SIGPIPE,&act,NULL) == -1 ||
-			sigaction(SIGTERM,&act,NULL) == -1 ||
-			sigaction(SIGCHLD,&act_child_process,NULL) == -1){
-		fprintf(stderr,"(%s): cannot handle the signal.\n",prog);
-		return -1;
-	}
-	return 0;
+    (void)signo;
+    reload_certificate = 1;
 }
 
-int handle_sig_ssl_process()
+static int install_handlers(int tls)
 {
-	/*set up signal handler*/
-	struct sigaction act;
-	memset(&act,0,sizeof(struct sigaction));
-
-	struct sigaction act_child_process;
-	memset(&act_child_process,0,sizeof(struct sigaction));
-	act.sa_sigaction = &handler_ssl_process;
-	act_child_process.sa_handler = SIG_IGN;
-	act_child_process.sa_flags = SA_NOCLDWAIT;
-	
-	if(/*sigaction(SIGSEGV, &act, NULL) == -1 ||*/
-			sigaction(SIGHUP,&act,NULL) == -1 || 
-			sigaction(SIGINT,&act,NULL) == -1 || 
-			sigaction(SIGPIPE,&act,NULL) == -1 ||
-			sigaction(SIGTERM,&act,NULL) == -1 ||
-			sigaction(SIGCHLD,&act_child_process,NULL) == -1){
-		fprintf(stderr,"(%s): cannot handle the signal.\n",prog);
-		return -1;
-	}
-	return 0;
+    struct sigaction act = {0};
+    sigemptyset(&act.sa_mask);
+    sigaddset(&act.sa_mask, SIGINT);
+    sigaddset(&act.sa_mask, SIGTERM);
+    act.sa_handler = terminate_process;
+    if(sigaction(SIGINT, &act, NULL) || sigaction(SIGTERM, &act, NULL)) return -1;
+    /* A disconnected peer is an I/O failure, not a server shutdown request. */
+    act.sa_handler = SIG_IGN;
+    if(sigaction(SIGPIPE, &act, NULL)) return -1;
+    act.sa_handler = tls ? request_certificate_reload : SIG_IGN;
+    if(sigaction(SIGHUP, &act, NULL)) return -1;
+    /* Keep exited children waitable, preventing PID reuse before reaping. */
+    act.sa_handler = SIG_DFL;
+    if(sigaction(SIGCHLD, &act, NULL)) return -1;
+    return 0;
 }
 
-int handle_sig_db_process()
+int handle_sig_main_process(void) { return install_handlers(0); }
+int handle_sig_http_process(void) { return install_handlers(0); }
+int handle_sig_ssl_process(void) { return install_handlers(1); }
+int handle_sig_db_process(void) { return install_handlers(0); }
+
+pid_t server_fork(void)
 {
-	/*set up signal handler*/
-	struct sigaction act;
-	memset(&act,0,sizeof(struct sigaction));
-
-	struct sigaction act_child_process;
-	memset(&act_child_process,0,sizeof(struct sigaction));
-	act.sa_handler = &handler_db_process;
-	act_child_process.sa_handler = SIG_IGN;
-	act_child_process.sa_flags = SA_NOCLDWAIT;
-	
-	if(/*sigaction(SIGSEGV, &act, NULL) == -1 ||*/
-			sigaction(SIGINT,&act,NULL) == -1 || 
-			sigaction(SIGPIPE,&act,NULL) == -1 ||
-			sigaction(SIGTERM,&act,NULL) == -1 ||
-			sigaction(SIGCHLD,&act_child_process,NULL) == -1){
-		fprintf(stderr,"(%s): cannot handle the signal.\n",prog);
-		return -1;
-	}
-
-	return 0;
+    pid_t parent = getpid();
+    pid_t child = fork();
+    if(child == 0){
+        server_parent = parent;
+        /* Linux clears this setting at every fork: arm it in EVERY child.
+         * SIGKILL also covers a blocked worker or a parent killed with -9. */
+        if(prctl(PR_SET_PDEATHSIG, (long)SIGKILL, 0L, 0L, 0L) == -1)
+            _exit(125);
+        /* Parent may have exited between fork and prctl. Never attach to init. */
+        if(getppid() != parent) _exit(125);
+    }
+    return child;
 }
 
-static void handler_http_process(int signo)
+int signal_server_process(pid_t pid, int signo)
 {
-	switch(signo){
-	case SIGINT:
-	case SIGTERM:
-	case SIGPIPE:
-		fprintf(stderr,"the http process recieved sig no %d\n",signo);
-		if(ssl_proc == -1 && db_proc != -1)
-			kill(db_proc,SIGKILL);
-		break;
-	default:
-		stop_listening(http_sock);
-		kill(http_proc,SIGKILL);
-	}
+    /* Reject init, process groups, and the broadcast sentinel, even on error paths. */
+    if(pid <= 1){ errno = EINVAL; return -1; }
+    return kill(pid, signo);
 }
 
-static void handler_ssl_process(int signo,siginfo_t *info,void*)
+int signal_server_parent(int signo)
 {
-	switch(signo){
-	case SIGHUP:
-		/*Reload certificate*/
-		reload_certificate = 1;
-		break;
-	case SIGINT:
-	case SIGTERM:
-	case SIGPIPE:
-		fprintf(stderr,"the ssl process recieved sig no %d legaly from pid %d\n",signo,info->si_pid);
-		break;
-	default:
-		stop_listening(ssl_sock);
-		if(db_proc != -1)
-			kill(db_proc,SIGTERM);
-		kill(ssl_proc,SIGKILL);
-	}
+    if(server_parent <= 1 || getppid() != server_parent){ errno = ESRCH; return -1; }
+    return signal_server_process(server_parent, signo);
 }
 
-static void handler_main_process(int signo)
+int server_child_running(pid_t pid)
 {
-	switch(signo){
-	/*case SIGSEGV:*/ /* in production you might want this on*/
-	case SIGINT:
-	case SIGTERM:
-	case SIGPIPE:
-		stop_monitor();	
-		stop_listening(hdl_sock);
-		/*terminate all the child*/
-		if(ssl_proc != -1)
-			kill(ssl_proc,SIGKILL);
-
-		if(http_proc != -1)
-			kill(http_proc,SIGTERM);
-
-		if(signo == SIGINT)
-			fprintf(stderr,"\b\b(%s):cleaning on interrupt, recived %s.\n",prog,"SIGINT");
-		else if(signo == SIGPIPE)
-			fprintf(stderr,"\b\b(%s):cleaning on interrupt, recived %s.\n",prog,"SIGPIPE");
-		else if(signo == SIGTERM)
-			fprintf(stderr,"\b\b(%s):cleaning on interrupt, recived %s.\n",prog,"SIGTERM");
-		else 
-			fprintf(stderr,"\b\b(%s):cleaning on interrupt, recived %s.\n",prog,"SIGSEGV");
-		break;
-	default:
-		break;
-	}
-}
-
-static void handler_db_process(int signo)
-{
-	switch(signo){
-	case SIGTERM:
-		close(db_sock);
-		if(db_proc != -1)
-			exit(-1);
-		/*TODO: undersand what action you have to take for this*/
-		break;
-	case SIGPIPE:
-	case SIGINT:
-	default:
-	}
+    if(pid <= 1) return 0;
+    int status;
+    pid_t result;
+    do { result = waitpid(pid, &status, WNOHANG); } while(result < 0 && errno == EINTR);
+    return result == 0;
 }

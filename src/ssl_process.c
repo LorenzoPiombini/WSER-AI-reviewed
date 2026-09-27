@@ -53,7 +53,7 @@ int SSL_work_process(int data_sock)
 #ifdef OWN_DB
 	int work_proc_data_sock = -1;
 
-	pid_t work_proc_pid = fork();
+	pid_t work_proc_pid = server_fork();
 
 	if(work_proc_pid == -1){
 		/*Parent*/
@@ -66,7 +66,7 @@ int SSL_work_process(int data_sock)
 		/* start DB handle process */	
 		if((work_proc_data_sock = listen_UNIX_socket(-1,INT_PROC_SOCK_DB)) == -1) {
 			fprintf(stderr,"cannot start Data base.\n");
-			kill(getppid(),SIGINT);
+			signal_server_parent(SIGINT);
 		 	exit(-1);
 		}
 
@@ -86,14 +86,14 @@ int SSL_work_process(int data_sock)
 
 	if(start_monitor(data_sock) == -1){
 		fprintf(stderr,"(%s): cannot start SSL context.\n",prog);
-		kill(getppid(),SIGINT);
+		signal_server_parent(SIGINT);
 		exit(-1);
 	}
 
 	if(init_SSL(&ctx) == -1){
 		fprintf(stderr,"(%s): cannot start SSL context.\n",prog);
 		stop_monitor();
-		kill(getppid(),SIGINT);
+		signal_server_parent(SIGINT);
 		exit(-1);
 	}
 
@@ -141,9 +141,9 @@ int SSL_work_process(int data_sock)
 					fprintf(stderr,"(%s): cannot start SSL context.\n",prog);
 					stop_monitor();
 #ifdef OWN_DB		
-					kill(db_proc,SIGINT);
+					signal_server_process(db_proc,SIGINT);
 #endif
-					kill(getppid(),SIGINT);
+					signal_server_parent(SIGINT);
 					exit(-1);
 				}
 				continue;
@@ -189,7 +189,16 @@ int SSL_work_process(int data_sock)
 
 			memcpy(&cli_sock, CMSG_DATA(cmsgp), sizeof(int));
 
-			pid_t child = fork();
+			int child_slot;
+            for(child_slot = 0; child_slot < 100; ++child_slot){
+                if(proc_list[child_slot].p <= 0 || !server_child_running(proc_list[child_slot].p)) break;
+            }
+            if(child_slot == 100){
+                close(cli_sock);
+                close(sock);
+                continue; /* at capacity: do not crash the service or leak a child */
+            }
+            pid_t child = server_fork();
 			if(child == 0){
 				/*clear ssl que error*/
 				ERR_clear_error(); 
@@ -339,32 +348,23 @@ teardown:
 			stop_listening(cli_sock);
 			stop_listening(sock);
 
-			int i;
-			for(i = 0; i < 100;i++){
-				if(proc_list[i].p == 0 || proc_list[i].p == -1){
-					proc_list[i].p = child;
-					proc_list[i].t = time(NULL);
-					break;
-				}
-			}
-						
-			assert(i < 100);
-			/*wait on the children*/
+            proc_list[child_slot].p = child;
+            proc_list[child_slot].t = time(NULL);
+            int i;
+            /*wait on the children*/
 			for(i = 0; i < 100;i++){
 				if(proc_list[i].p == 0 || proc_list[i].p == -1)
 					continue;
 
 				errno = 0;
-				if(kill(proc_list[i].p,0) == -1 && errno == ESRCH){
+				if(!server_child_running(proc_list[i].p)){
 					proc_list[i].p = -1;
 					proc_list[i].t = 0;
 					continue;
 				}
 
 				if(proc_list[i].t > 0 && ((time(NULL) - proc_list[i].t ) > (time_t) TIME_OUT)){
-					if(kill(proc_list[i].p,SIGKILL) == 0){
-						proc_list[i].p = -1;
-						proc_list[i].t = 0;
+					if(signal_server_process(proc_list[i].p,SIGKILL) == 0){
 						continue;
 					}
 				}
