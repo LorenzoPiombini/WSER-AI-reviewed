@@ -55,6 +55,7 @@ struct Request{
 	ssize_t cont_length;
 	char transfer_encoding[MIN_HEAD_FIELD];
 
+	char accept_encoding[MIN_HEAD_FIELD];
 	/*fields from OPTIONS method request (LIKE CORS browser preflight)*/
 	char access_control_request_headers[MIN_HEAD_FIELD];
 	char access_control_request_method[MIN_HEAD_FIELD]; 
