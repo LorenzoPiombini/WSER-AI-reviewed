@@ -50,6 +50,13 @@ int load_resource(char *rpath, struct Content *cont, int gzip)
 		 return -1;
 	}
 
+	size_t s = strlen(file_path);
+	char gzipped[s+4];
+	memset(gzipped,0,s+4);
+	char gz[] = ".gz";
+	memcpy(gzipped,file_path,s);
+	memcpy(&gzipped[s],gz,3);
+
 	int fd = fd_parent;
 	char *part = file_path + 1;
 	for(;;){
@@ -69,29 +76,25 @@ int load_resource(char *rpath, struct Content *cont, int gzip)
 			if(errno == ELOOP) fprintf(stderr,"they were trying to open a link\n");
 			return -1;
 		}
-
-		close(fd);
+		if(fd != fd_parent) close(fd);
 		fd = resource;
 		if(!slash){
 			struct stat st;
 			if(fstat(fd, &st) < 0){
 				close(fd);
+				close(fd_parent);
 				return -1;
 			}
 
 			if(st.st_size > 1024 && gzip){
-
-				size_t s = strlen(file_path);
-				char gzipped[s+4];
-				memset(gzipped,0,s+4);
-				char gz[] = ".gz";
-				memcpy(gzipped,file_path,s);
-				memcpy(&gzipped[s],gz,3);
-
 				int fd_gz = openat(fd_parent,gzipped,flags);
-				if(fd_gz == -1) break; /*regular file will be used*/ 
+				if(fd_gz == -1) {
+					close(fd_parent);
+					break; /*regular file will be used*/ 
+				}
 				gzip = GZ_HEADER;
 				close(fd);
+				close(fd_parent);
 				fd = fd_gz;
 			}
 			break;
