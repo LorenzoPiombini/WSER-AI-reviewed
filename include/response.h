@@ -57,6 +57,6 @@ struct Response{
 
 
 
-int generate_response(struct Response *res, int status, struct Content *cont, struct Request *req);
+int generate_response(struct Response *res, int status, struct Content *cont, struct Request *req,int gzip);
 void clear_response(struct Response *res);
 #endif

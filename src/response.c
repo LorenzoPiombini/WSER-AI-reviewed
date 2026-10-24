@@ -8,7 +8,7 @@
 static char prog[] = "Wser";
 static int set_up_headers(struct Header *headers, int status, size_t body_size);
 static void set_status_and_phrase(struct Header *headers, uint16_t status);
-static char *create_response_message(struct Response *res, int status, struct Content *cont, struct Request *req);
+static char *create_response_message(struct Response *res, int status, struct Content *cont, struct Request *req, int gzip);
 static int parse_body(struct Content *cont, struct Response *res);
 static int not_found_header(char *header, struct Request *req, struct Response *res, struct Content *cont);
 static int bad_request_header(char *header,struct Content *cont);
@@ -20,8 +20,8 @@ static char *day_parser(int day);
 static char *second_parser(int second);
 static char *date_formatter();
 
-int generate_response(struct Response *res, int status, struct Content *cont, struct Request *req){
-	char *h = create_response_message(res,status,cont,req);
+int generate_response(struct Response *res, int status, struct Content *cont, struct Request *req,int gzip){
+	char *h = create_response_message(res,status,cont,req,gzip);
 	if (!h) return -1;
 
 	snprintf(res->header_str, sizeof(res->header_str), "%s", h);
@@ -44,7 +44,7 @@ void clear_response(struct Response *res)
 	memset(res,0,sizeof(struct Response));
 }
 
-static char *create_response_message(struct Response *res, int status, struct Content *cont, struct Request *req)
+static char *create_response_message(struct Response *res, int status, struct Content *cont, struct Request *req, int gzip)
 {
 	if(set_up_headers(&res->headers,status,cont == NULL ? 0 :cont->size) == -1) return NULL;
 	static char h[STD_HD_L] = {0};
@@ -108,18 +108,40 @@ static char *create_response_message(struct Response *res, int status, struct Co
 	}else{
 	*/
 		if(strncmp(res->headers.protocol_vs,DEFAULT,STD_LEN_PTC) == 0){
-			if(snprintf(h,1024,"%s %u %s\r\n"\
-						"%s: %s\r\n"\
-						"%s: %s\r\n"\
-						"%s: %ld\r\n"\
-						"%s: %s\r\n"\
-						"\r\n",res->headers.protocol_vs, res->headers.status, res->headers.reason_phrase,
-						"Date", res->headers.date,
-						"Content-Type",req->cont_type,
-						"Content-Length",(cont ? cont->size : 0),
-						"Connection",res->headers.connection) == -1){
+			if(gzip){
+				if(snprintf(h,1024,"%s %u %s\r\n"\
+							"%s: %s\r\n"\
+							"%s: %s\r\n"\
+							"%s: %s\r\n"\
+							"%s: %s\r\n"\
+							"%s: %s\r\n"\
+							"%s: %ld\r\n"\
+							"%s: %s\r\n"\
+							"\r\n",res->headers.protocol_vs, res->headers.status, res->headers.reason_phrase,
+							"Date", res->headers.date,
+							"Content-Type",req->cont_type,
+							"Content-Encoding","gzip"
+							"Vary","Accept-Encoding",
+							"Cache-Control", "no-cache",
+							"Content-Length",cont->size,
+							"Connection","close") == -1){
+					return NULL;
+				}
 
-				return NULL;
+			}else{
+				if(snprintf(h,1024,"%s %u %s\r\n"\
+							"%s: %s\r\n"\
+							"%s: %s\r\n"\
+							"%s: %ld\r\n"\
+							"%s: %s\r\n"\
+							"\r\n",res->headers.protocol_vs, res->headers.status, res->headers.reason_phrase,
+							"Date", res->headers.date,
+							"Content-Type",req->cont_type,
+							"Content-Length",(cont ? cont->size : 0),
+							"Connection",res->headers.connection) == -1){
+
+					return NULL;
+				}
 			}
 		}else if(strncmp(res->headers.protocol_vs,HTTP2,STD_LEN_HTTP2) == 0){
 			if(snprintf(h,1024,"%s %u %s\r\n"\
@@ -133,8 +155,8 @@ static char *create_response_message(struct Response *res, int status, struct Co
 				return NULL;
 			}
 		}
-	/*}*/
-	return h;
+		/*}*/
+		return h;
 }
 
 
@@ -292,76 +314,76 @@ static void set_status_and_phrase(struct Header *headers, uint16_t status)
 
 		case 411  :
 			headers->status = status;
-		strncpy(headers->reason_phrase,"Length R",50);
-		break;
-	       
-	case 412  :
-		headers->status = status;
-		strncpy(headers->reason_phrase,"Precond",50);
-		break;
-		       
-	case 413  :
-		headers->status = status;
-		strncpy(headers->reason_phrase,"Payloa",50);
-		break;
-	       
-	case 414  :
-		headers->status = status;
-		strncpy(headers->reason_phrase,"URI T",50);
-		break;
-	       
-	case 415  :
-		headers->status = status;
-		strncpy(headers->reason_phrase,"Unsupported Media Type",50);
-		break;
-	      
-	case 416  :
-		headers->status = status;
-		strncpy(headers->reason_phrase,"Range Not Satisfiable",50);
-		break;
-	       
-	case 417  :
-		headers->status = status;
-		strncpy(headers->reason_phrase,"Expectation Failed",50);
-		break;
-	       
-	case 426  :
-		headers->status = status;
-		strncpy(headers->reason_phrase,"Upgrade Required",50);
-		break;
-	       
-	case 500  :
-		headers->status = status;
-		strncpy(headers->reason_phrase,"Internal Server Error",50);
-		break;
-	       
-	case 501  :
-		headers->status = status;
-		strncpy(headers->reason_phrase,"Not Implemented",50);
-		break;
-	       
-	case 502  :
-		headers->status = status;
-		strncpy(headers->reason_phrase,"Bad Gateway",50);
-		break;
-	       
-	case 503  :
-		headers->status = status;
-		strncpy(headers->reason_phrase,"Service Unavailable",50);
-		break;
-	       
-	case 504  :
-		headers->status = status;
-		strncpy(headers->reason_phrase,"Gateway Timeout",50);
-		break;
-	      
-	case 505  :
-		headers->status = status;
-		strncpy(headers->reason_phrase,"HTTP Version Not Supported",50);
-		break;
-	       
-	default:
-		break;
+			strncpy(headers->reason_phrase,"Length R",50);
+			break;
+
+		case 412  :
+			headers->status = status;
+			strncpy(headers->reason_phrase,"Precond",50);
+			break;
+
+		case 413  :
+			headers->status = status;
+			strncpy(headers->reason_phrase,"Payloa",50);
+			break;
+
+		case 414  :
+			headers->status = status;
+			strncpy(headers->reason_phrase,"URI T",50);
+			break;
+
+		case 415  :
+			headers->status = status;
+			strncpy(headers->reason_phrase,"Unsupported Media Type",50);
+			break;
+
+		case 416  :
+			headers->status = status;
+			strncpy(headers->reason_phrase,"Range Not Satisfiable",50);
+			break;
+
+		case 417  :
+			headers->status = status;
+			strncpy(headers->reason_phrase,"Expectation Failed",50);
+			break;
+
+		case 426  :
+			headers->status = status;
+			strncpy(headers->reason_phrase,"Upgrade Required",50);
+			break;
+
+		case 500  :
+			headers->status = status;
+			strncpy(headers->reason_phrase,"Internal Server Error",50);
+			break;
+
+		case 501  :
+			headers->status = status;
+			strncpy(headers->reason_phrase,"Not Implemented",50);
+			break;
+
+		case 502  :
+			headers->status = status;
+			strncpy(headers->reason_phrase,"Bad Gateway",50);
+			break;
+
+		case 503  :
+			headers->status = status;
+			strncpy(headers->reason_phrase,"Service Unavailable",50);
+			break;
+
+		case 504  :
+			headers->status = status;
+			strncpy(headers->reason_phrase,"Gateway Timeout",50);
+			break;
+
+		case 505  :
+			headers->status = status;
+			strncpy(headers->reason_phrase,"HTTP Version Not Supported",50);
+			break;
+
+		default:
+			break;
 	}
 }
 
@@ -372,11 +394,11 @@ static int parse_body(struct Content *cont, struct Response *res)
 			memcpy(res->body.content,cont->cnt_dy,cont->size);
 		else
 			memcpy(res->body.content,cont->cnt_st,cont->size);
-		
+
 		res->body.size = cont->size;
 		return 0;
 	}
-	
+
 	res->body.d_cont = calloc(cont->size+1,sizeof(char));
 	if(!res->body.d_cont) return -1;
 
@@ -387,16 +409,16 @@ static int parse_body(struct Content *cont, struct Response *res)
 }
 static int not_found_header(char *header, struct Request *req, struct Response *res, struct Content *cont)
 {
-    (void)req;
-    size_t size = cont ? cont->size : sizeof(NOT_FOUND) - 1;
-    if(!cont){
-        memcpy(res->body.content, NOT_FOUND, size);
-        res->body.size = size;
-    }
-    int n = snprintf(header, STD_HD_L,
-        "HTTP/1.1 404 Not Found\r\nDate: %s\r\nContent-Type: text/html\r\n"
-        "Content-Length: %zu\r\nConnection: close\r\n\r\n", res->headers.date, size);
-    return n < 0 || n >= STD_HD_L ? -1 : 0;
+	(void)req;
+	size_t size = cont ? cont->size : sizeof(NOT_FOUND) - 1;
+	if(!cont){
+		memcpy(res->body.content, NOT_FOUND, size);
+		res->body.size = size;
+	}
+	int n = snprintf(header, STD_HD_L,
+			"HTTP/1.1 404 Not Found\r\nDate: %s\r\nContent-Type: text/html\r\n"
+			"Content-Length: %zu\r\nConnection: close\r\n\r\n", res->headers.date, size);
+	return n < 0 || n >= STD_HD_L ? -1 : 0;
 }
 
 static int bad_request_header(char *header,struct Content *cont)
@@ -426,9 +448,9 @@ static int server_error_header(char *header){
 static int moved_permanently_header(char *header,struct Request *r)
 {
 	if(snprintf(header,1024,"HTTP/1.1 301 Moved Permanently\r\n"\
-							"Location: %s%s\r\n"\
-    						"Content-Length: 0\r\n"\
-        					"Connection: close\r\n\r\n",REDIRECT_DEFAULT_DOMAIN,r->resource) == -1){
+				"Location: %s%s\r\n"\
+				"Content-Length: 0\r\n"\
+				"Connection: close\r\n\r\n",REDIRECT_DEFAULT_DOMAIN,r->resource) == -1){
 		fprintf(stderr,"(%s): cannot form 301 response.",prog);
 		return -1;
 	}
@@ -444,7 +466,7 @@ static int options_response_header(char *header, int status)
 				"Access-Control-Allow-Methods: %s, %s\r\n"\
 				"Access-Control-Allow-Headers: %s\r\n"\
 				"Access-Control-Max-Age: %u\r\n"\
-                "Content-Length: 0\r\n\r\n",
+				"Content-Length: 0\r\n\r\n",
 				"HTTP/1.1", status,mess,
 				ORIGIN_DEF,"GET","OPTIONS",
 				"Content-type",SECONDS_IN_A_DAY) == -1){
@@ -456,18 +478,18 @@ static int options_response_header(char *header, int status)
 
 static char *date_formatter()
 {
- 	static char date [50] = {0};
+	static char date [50] = {0};
 
 	time_t t =0;
 	if((t = time(NULL)) == -1) return NULL;
 	struct tm *d = gmtime(&t);
 	if(!d) return NULL;
 
-	
+
 	if(snprintf(date,50,"%s, %02d %s %d %02d:%02d:%s GMT",day_parser(d->tm_wday),
 				d->tm_mday,month_parser(d->tm_mon), d->tm_year + 1900,
 				d->tm_hour,d->tm_min,second_parser(d->tm_sec)) == -1) return NULL;
-	
+
 	return date;
 
 }
@@ -475,53 +497,53 @@ static char *date_formatter()
 static char *day_parser(int day)
 {
 	switch(day){
-	case 0: return "Sun";
-	case 1: return "Mon";
-	case 2: return "Tue";
-	case 3: return "Wed";
-	case 4: return "Thu";
-	case 5: return "Fri";
-	case 6: return "Sat";
-	default: return NULL;
+		case 0: return "Sun";
+		case 1: return "Mon";
+		case 2: return "Tue";
+		case 3: return "Wed";
+		case 4: return "Thu";
+		case 5: return "Fri";
+		case 6: return "Sat";
+		default: return NULL;
 	}
 }
 static char *month_parser(int month)
 {
 	switch(month){
-	case 0: return "Jan";
-	case 1: return "Feb";
-	case 2: return "Mar";
-	case 3: return "Apr";
-	case 4: return "May";
-	case 5: return "Jun";
-	case 6: return "Jul";
-	case 7: return "Aug";
-	case 8: return "Sep";
-	case 9: return "Oct";
-	case 10: return "Nov";
-	case 11: return "Dec";
-	default: return NULL;
+		case 0: return "Jan";
+		case 1: return "Feb";
+		case 2: return "Mar";
+		case 3: return "Apr";
+		case 4: return "May";
+		case 5: return "Jun";
+		case 6: return "Jul";
+		case 7: return "Aug";
+		case 8: return "Sep";
+		case 9: return "Oct";
+		case 10: return "Nov";
+		case 11: return "Dec";
+		default: return NULL;
 	}
 
 }
 static char *second_parser(int second)
 {
 	switch(second){
-	case 0 : return "00";
-	case 1 : return "01";
-	case 2 : return "02";
-	case 3 : return "03";
-	case 4 : return "04";
-	case 5 : return "05";
-	case 6 : return "06";
-	case 7 : return "07";
-	case 8 : return "08";
-	case 9 : return "09";
-	default:
-	{
-		static char num [3] = {0};
-		if(snprintf(num,3,"%d",second) == -1 ) return NULL;
-		return num;
-	}
+		case 0 : return "00";
+		case 1 : return "01";
+		case 2 : return "02";
+		case 3 : return "03";
+		case 4 : return "04";
+		case 5 : return "05";
+		case 6 : return "06";
+		case 7 : return "07";
+		case 8 : return "08";
+		case 9 : return "09";
+		default:
+				 {
+					 static char num [3] = {0};
+					 if(snprintf(num,3,"%d",second) == -1 ) return NULL;
+					 return num;
+				 }
 	}
 }
