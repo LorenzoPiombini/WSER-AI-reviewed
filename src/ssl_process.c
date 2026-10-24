@@ -475,7 +475,8 @@ static int process_request(struct Request *req, int cli_sock)
 		} else{
 
 #endif
-			if(load_resource(req->resource,&cont) == -1){
+			int r = 0;
+			if((r=load_resource(req->resource,&cont,0)) == -1){
 				/*send not found response*/
 				if(generate_response(&res,404,NULL,req) == -1) break;
 

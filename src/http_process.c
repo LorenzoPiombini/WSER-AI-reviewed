@@ -308,7 +308,8 @@ static int process_request(struct Request *req, int cli_sock,int result_of_http_
 			if(secure){
 				if(strstr(req->resource,AUTO_CERT_RENEWAL)){
 					/*load the file, and send it*/
-					if(load_resource(req->resource,&cont) == -1){
+					int r = 0;
+					if((r = load_resource(req->resource,&cont,0)) == -1){
 						/*send not found response*/
 						if(generate_response(&res,404,&cont,req) == -1) break;
 
@@ -415,7 +416,8 @@ static int process_request(struct Request *req, int cli_sock,int result_of_http_
                     1
 #endif
             ){
-				if(load_resource(req->resource,&cont) == -1){
+				int r = 0;
+				if((r=load_resource(req->resource,&cont,0)) == -1){
 					/*send not found response*/
 					if(generate_response(&res,404,&cont,req) == -1) break;
 
@@ -488,7 +490,8 @@ static int process_request(struct Request *req, int cli_sock,int result_of_http_
 				if(secure){
 					if(strstr(req->resource,AUTO_CERT_RENEWAL)){
 						/*load the file, and send it*/
-						if(load_resource(req->resource,&cont) == -1){
+						int r = 0;
+						if((r=load_resource(req->resource,&cont,0)) == -1){
 							/*send not found response*/
 							if(generate_response(&res,404,&cont,req) == -1) break;
 
@@ -625,7 +628,8 @@ static int process_request(struct Request *req, int cli_sock,int result_of_http_
 				if(secure){
 					if(strstr(req->resource,AUTO_CERT_RENEWAL)){
 						/*load the file, and send it*/
-						if(load_resource(req->resource,&cont) == -1){
+						int r =0;
+						if((r=load_resource(req->resource,&cont,0)) == -1){
 							/*send not found response*/
 							if(generate_response(&res,404,&cont,req) == -1) break;
 

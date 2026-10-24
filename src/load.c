@@ -86,11 +86,11 @@ int load_resource(char *rpath, struct Content *cont, int gzip)
 				char gz[] = ".gz";
 				memcpy(gzipped,file_path,s);
 				memcpy(&gzipped[s],gz,3);
-				close(fd);
 
-				fd = open(gzipped,flags);
-				if(fd == -1) return -1;
+				int fd_gz = open(gzipped,flags);
+				if(fd_gz == -1) break; /*regular file will be used*/ 
 				gzip = GZ_HEADER;
+				close(fd);
 			}
 			break;
 		}	
