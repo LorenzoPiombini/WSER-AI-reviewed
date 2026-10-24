@@ -69,7 +69,7 @@ int load_resource(char *rpath, struct Content *cont, int gzip)
 		errno = 0;
 		int resource = openat(fd,part,flags);
 		if(resource == -1){
-			close(fd);
+			if(fd != fd_parent) close(fd);
 			close(fd_parent);
 			strncpy(cont->cnt_st,NOT_FOUND,strlen(NOT_FOUND)+1);
 			cont->size = strlen(NOT_FOUND);
@@ -89,10 +89,7 @@ int load_resource(char *rpath, struct Content *cont, int gzip)
 
 			if(st.st_size > 1024 && gzip){
 				int fd_gz = openat(fd_parent,&gzipped[1],flags);
-				if(fd_gz == -1) {
-					close(fd_parent);
-					break; /*regular file will be used*/ 
-				}
+				if(fd_gz == -1) break; /*regular file will be used*/ 
 				gzip = GZ_HEADER;
 				close(fd);
 				fd = fd_gz;
