@@ -45,11 +45,12 @@ int load_resource(char *rpath, struct Content *cont, int gzip)
 	}
 
 
-	int fd = open(getuid() == 0 ? "/www" : "./www",O_RDONLY | O_DIRECTORY | O_CLOEXEC |  O_NOFOLLOW);
-	if(fd == -1){
+	int fd_parent = open(getuid() == 0 ? "/www" : "./www",O_RDONLY | O_DIRECTORY | O_CLOEXEC |  O_NOFOLLOW);
+	if(fd_parent == -1){
 		 return -1;
 	}
 
+	int fd = fd_parent;
 	char *part = file_path + 1;
 	for(;;){
 		char *slash = strchr(part,'/');
@@ -87,10 +88,11 @@ int load_resource(char *rpath, struct Content *cont, int gzip)
 				memcpy(gzipped,file_path,s);
 				memcpy(&gzipped[s],gz,3);
 
-				int fd_gz = open(gzipped,flags);
+				int fd_gz = openat(fd_parent,gzipped,flags);
 				if(fd_gz == -1) break; /*regular file will be used*/ 
 				gzip = GZ_HEADER;
 				close(fd);
+				fd = fd_gz;
 			}
 			break;
 		}	

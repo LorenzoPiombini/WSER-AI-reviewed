@@ -146,24 +146,24 @@ static void file_tests(void)
     assert(fd >= 0 && write(fd,"home",4) == 4); close(fd);
     struct Content c = {0};
     short_reads = 1;
-    assert(load_resource("/a%20b.bin?v=2", &c) == 0);
+    assert(load_resource("/a%20b.bin?v=2", &c, 0) == 0);
     short_reads = 0;
     assert(c.size == 3 && !memcmp(c.cnt_st,"a\0b",3)); clear_content(&c);
-    assert(load_resource("/?v=2", &c) == 0 && c.size == 4); clear_content(&c);
+    assert(load_resource("/?v=2", &c,0) == 0 && c.size == 4); clear_content(&c);
     const char *invalid[] = {"/%2e%2e/index.html", "/%00", "/bad%", "/bad%xy", NULL};
     for(int i=0;invalid[i];++i){
-        assert(load_resource((char *)invalid[i], &c) == -1); clear_content(&c);
+        assert(load_resource((char *)invalid[i], &c,0) == -1); clear_content(&c);
     }
     assert(symlink("index.html", "www/link") == 0);
-    assert(load_resource("/link", &c) == -1); clear_content(&c);
+    assert(load_resource("/link", &c,0) == -1); clear_content(&c);
     assert(mkfifo("www/pipe",0600) == 0);
     struct timespec start, end;
     assert(clock_gettime(CLOCK_MONOTONIC, &start) == 0);
     alarm(2); /* a FIFO open must not hang waiting for a writer */
-    assert(load_resource("/pipe", &c) == -1); alarm(0); clear_content(&c);
+    assert(load_resource("/pipe", &c,0) == -1); alarm(0); clear_content(&c);
     assert(clock_gettime(CLOCK_MONOTONIC, &end) == 0);
     assert((end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9 < 1.0);
-    assert(load_resource("/", &c) == 0); clear_content(&c);
+    assert(load_resource("/", &c,0) == 0); clear_content(&c);
     unlink("www/pipe"); unlink("www/link"); unlink("www/index.html"); unlink("www/a b.bin");
     rmdir("www"); assert(fchdir(cwd) == 0); close(cwd); rmdir(name);
 }
