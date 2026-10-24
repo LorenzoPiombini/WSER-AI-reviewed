@@ -78,18 +78,19 @@ int load_resource(char *rpath, struct Content *cont, int gzip)
 				return -1;
 			}
 
-			if(sy.st_size > 1024 && gzip){
+			if(st.st_size > 1024 && gzip){
 
 				size_t s = strlen(file_path);
 				char gzipped[s+4];
 				memset(gzipped,0,s+4);
 				char gz[] = ".gz";
-				memcpy(&file_path[s],gz,3);
+				memcpy(gzipped,file_path,s);
+				memcpy(&gzipped[s],gz,3);
 				close(fd);
 
 				fd = open(gzipped,flags);
 				if(fd == -1) return -1;
-				gzipped = GZ_HEADER;
+				gzip = GZ_HEADER;
 			}
 			break;
 		}	
@@ -134,7 +135,7 @@ int load_resource(char *rpath, struct Content *cont, int gzip)
 	close(fd);
 	cont->size = length;
 	if(allocated) cont->cnt_dy = buf;
-	if(gzipped == GZ_HEADER) return GZ_HEADER;
+	if(gzip == GZ_HEADER) return GZ_HEADER;
 	return 0;
 }
 
