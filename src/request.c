@@ -87,7 +87,7 @@ static int parse_header(char *head, struct Request *req)
             FIELD("Origin", origin)
             FIELD("Access-Control-Request-Headers", access_control_request_headers)
             FIELD("Access-Control-Request-Method", access_control_request_method)
-			FIELD("Accept-Enconding",accept_encoding);
+			FIELD("Accept-Encoding",accept_encoding);
 #undef FIELD
         }
     }
