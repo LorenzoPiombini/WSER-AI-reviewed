@@ -32,7 +32,7 @@ static int ser_array(const char *json,struct Json_token *t,uint8_t *buffer,size_
 static int check_key_in_object(char **allowed,const char *json,struct Json_token *t,int *i,int *seen);
 #endif
 
-int load_resource(char *rpath, struct Content *cont)
+int load_resource(char *rpath, struct Content *cont, int gzip)
 {
 
 	if(!rpath || !cont) return -1;
@@ -43,6 +43,7 @@ int load_resource(char *rpath, struct Content *cont)
 		fprintf(stderr,"map_rpath failed for some reason\nrpath is %s\n",rpath);
 		return -1;
 	}
+
 
 	int fd = open(getuid() == 0 ? "/www" : "./www",O_RDONLY | O_DIRECTORY | O_CLOEXEC |  O_NOFOLLOW);
 	if(fd == -1){
@@ -70,17 +71,38 @@ int load_resource(char *rpath, struct Content *cont)
 
 		close(fd);
 		fd = resource;
-		if(!slash) break;
+		if(!slash){
+			struct stat st;
+			if(fstat(fd, &st) < 0){
+				close(fd);
+				return -1;
+			}
+
+			if(sy.st_size > 1024 && gzip){
+
+				size_t s = strlen(file_path);
+				char gzipped[s+4];
+				memset(gzipped,0,s+4);
+				char gz[] = ".gz";
+				memcpy(&file_path[s],gz,3);
+				close(fd);
+
+				fd = open(gzipped,flags);
+				if(fd == -1) return -1;
+				gzipped = GZ_HEADER;
+			}
+			break;
+		}	
 		part = slash + 1;
 	}
 
-    struct stat st;
-    if(fstat(fd, &st) < 0 || !S_ISREG(st.st_mode) ||
-       st.st_size < 0 || st.st_size > MAX_LOADABLE_FILE){
-        close(fd);
-        return -1;
-    }
-    size_t length = (size_t)st.st_size;
+	struct stat st;
+	if(fstat(fd, &st) < 0 || !S_ISREG(st.st_mode) ||
+			st.st_size < 0 || st.st_size > MAX_LOADABLE_FILE){
+		close(fd);
+		return -1;
+	}
+	size_t length = (size_t)st.st_size;
 	char *buf = cont->cnt_st;
 	char *allocated  = NULL;
 
@@ -98,7 +120,10 @@ int load_resource(char *rpath, struct Content *cont)
     size_t received = 0;
     while(received < length){
         ssize_t n = read(fd, buf + received, length - received);
-        if(n > 0){ received += (size_t)n; continue; }
+        if(n > 0){ 
+			received += (size_t)n;
+			continue; 
+		}
         if(n < 0 && errno == EINTR) continue;
         free(allocated);
         close(fd);
@@ -109,6 +134,7 @@ int load_resource(char *rpath, struct Content *cont)
 	close(fd);
 	cont->size = length;
 	if(allocated) cont->cnt_dy = buf;
+	if(gzipped == GZ_HEADER) return GZ_HEADER;
 	return 0;
 }
 
@@ -125,7 +151,8 @@ static char *map_rpath(char *rpath)
 {
     if(*rpath != '/') return NULL;
     static char path[1024];
-    size_t end = strcspn(rpath, "?#"), j = 0;
+    size_t end = strcspn(rpath, "?#");
+	size_t j = 0;
     for(size_t i = 0; i < end; ++i){
         unsigned char c = rpath[i];
         if(c == '%'){
@@ -149,7 +176,9 @@ static char *map_rpath(char *rpath)
     if(j == 1) memcpy(path, "/index.html", sizeof("/index.html"));
     return path;
 }
-
+static int check_gz_sidecar(int fd)
+{
+}
 void clear_content(struct Content *cont){
 	if(cont->cnt_dy) free(cont->cnt_dy);
 	cont->cnt_dy = NULL;

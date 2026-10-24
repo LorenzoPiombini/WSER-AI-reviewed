@@ -10,7 +10,8 @@ struct Content{
 };
 
 
-int load_resource(char *rpath, struct Content *cont);
+#define GZ_HEADER 700
+int load_resource(char *rpath, struct Content *cont, int gzip);
 void clear_content(struct Content *cont);
 
 #ifdef OWN_DB
