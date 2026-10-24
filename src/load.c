@@ -70,6 +70,7 @@ int load_resource(char *rpath, struct Content *cont, int gzip)
 		int resource = openat(fd,part,flags);
 		if(resource == -1){
 			close(fd);
+			close(fd_parent);
 			strncpy(cont->cnt_st,NOT_FOUND,strlen(NOT_FOUND)+1);
 			cont->size = strlen(NOT_FOUND);
 			fprintf(stderr,"(%s): cannot open '%s'.\n",prog,rpath);
@@ -87,21 +88,20 @@ int load_resource(char *rpath, struct Content *cont, int gzip)
 			}
 
 			if(st.st_size > 1024 && gzip){
-				int fd_gz = openat(fd_parent,gzipped,flags);
+				int fd_gz = openat(fd_parent,&gzipped[1],flags);
 				if(fd_gz == -1) {
 					close(fd_parent);
 					break; /*regular file will be used*/ 
 				}
 				gzip = GZ_HEADER;
 				close(fd);
-				close(fd_parent);
 				fd = fd_gz;
 			}
 			break;
 		}	
 		part = slash + 1;
 	}
-
+	close(fd_parent);
 	struct stat st;
 	if(fstat(fd, &st) < 0 || !S_ISREG(st.st_mode) ||
 			st.st_size < 0 || st.st_size > MAX_LOADABLE_FILE){
