@@ -115,12 +115,12 @@ static char *create_response_message(struct Response *res, int status, struct Co
 							"%s: %s\r\n"\
 							"%s: %s\r\n"\
 							"%s: %s\r\n"\
-							"%s: %ld\r\n"\
+							"%s: %zu\r\n"\
 							"%s: %s\r\n"\
 							"\r\n",res->headers.protocol_vs, res->headers.status, res->headers.reason_phrase,
 							"Date", res->headers.date,
 							"Content-Type",req->cont_type,
-							"Content-Encoding","gzip"
+							"Content-Encoding","gzip",
 							"Vary","Accept-Encoding",
 							"Cache-Control", "no-cache",
 							"Content-Length",cont->size,
