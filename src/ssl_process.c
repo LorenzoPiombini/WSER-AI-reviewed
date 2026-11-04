@@ -156,6 +156,11 @@ int SSL_work_process(int data_sock, uint64_t domains)
 					signal_server_parent(SIGINT);
 					exit(-1);
 				}
+	
+				struct SNI_config config = {(char**)(domains & 0x0000FFFFFFFFFFFF),ctxs,active_domains};
+				/*register the SNI*/
+				SSL_CTX_set_tlsext_servername_callback(ctxs[0], sni_callback);
+				SSL_CTX_set_tlsext_servername_arg(ctxs[0],&config);
 				continue;
 			}
 			continue;/*you might want to change this to got teardown*/
