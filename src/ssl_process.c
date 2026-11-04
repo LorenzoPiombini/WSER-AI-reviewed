@@ -157,7 +157,7 @@ int SSL_work_process(int data_sock, uint64_t domains)
 					exit(-1);
 				}
 	
-				config = {(char**)(domains & 0x0000FFFFFFFFFFFF),ctxs,active_domains};
+				config.ctxs = ctxs;
 				/*register the SNI*/
 				SSL_CTX_set_tlsext_servername_callback(ctxs[0], sni_callback);
 				SSL_CTX_set_tlsext_servername_arg(ctxs[0],&config);
