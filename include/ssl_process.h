@@ -3,6 +3,12 @@
 
 
 #include <openssl/ssl.h>
+#include <stdint.h>
 
-int SSL_work_process(int data_sock);
+struct SNI_config{
+	char **domains;
+	SSL_CTX **ctxs;
+	int domain_count;
+};
+int SSL_work_process(int data_sock, uint64_t domains);
 #endif 

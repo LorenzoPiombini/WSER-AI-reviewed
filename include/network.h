@@ -131,7 +131,11 @@ extern struct Connection_data cds[MAX_CON_DAT_ARR];
 #define CUSTOM_STR_REQUEST 	"%s %s %s\r\n"
 
 #define USER_FIELDS 1
-int init_SSL(SSL_CTX **ctx);
+extern SSL_CTX **ctxs;
+extern SSL_CTX *ctx_client;
+
+int init_SSL(char** domains, int active_domain,SSL_CTX *** ctxs);
+void *free_SSL_ctxs(SSL_CTX ***ctxs, int active_domain);
 int wait_for_connections_SSL(int sock_fd,int *cli_sock);
 int listen_port_80(uint16_t *port);
 int listen_UNIX_socket(int opt, char *sock_path);

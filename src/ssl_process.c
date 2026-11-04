@@ -8,6 +8,7 @@
 #include <signal.h>
 #include <unistd.h>
 #include <errno.h>
+#include <strings.h>
 #include <time.h>
 #include <assert.h>
 #include "load.h"
@@ -28,6 +29,7 @@ struct p_info proc_list[100] = {0};
 #define TIME_OUT 300 /*5 minutes*/
 #define EIGHTkib_limit 8192
 
+SSL_CTX **ctxs = NULL;
 
 static char prog[] = "wser";
 
@@ -47,7 +49,9 @@ static int handle_ssl_steps(struct Connection_data *cd,
 							SSL_CTX **ctx);
 
 
-int SSL_work_process(int data_sock)
+static int sni_callback(SSL *ssl, int *ad, void *args);
+
+int SSL_work_process(int data_sock, uint64_t domains)
 {
 
 #ifdef OWN_DB
@@ -90,12 +94,19 @@ int SSL_work_process(int data_sock)
 		exit(-1);
 	}
 
-	if(init_SSL(&ctx) == -1){
+	char **d = (char **)(domains & 0x0000FFFFFFFFFFFF);
+	int active_domains = (int)(domains >> 48);
+	if(init_SSL(d,active_domains,&ctxs) == -1){
 		fprintf(stderr,"(%s): cannot start SSL context.\n",prog);
 		stop_monitor();
 		signal_server_parent(SIGINT);
 		exit(-1);
 	}
+
+	struct SNI_config config = {(char**)(domains & 0x0000FFFFFFFFFFFF),ctxs,active_domains};
+	/*register the SNI*/
+	SSL_CTX_set_tlsext_servername_callback(ctxs[0], sni_callback);
+	SSL_CTX_set_tlsext_servername_arg(ctxs[0],&config);
 
 	/*setting up to receiving file descriptor from another process*/
 	int            data, cli_sock;
@@ -135,9 +146,8 @@ int SSL_work_process(int data_sock)
 		if(nfds == MONITOR_INTERRUPTED){
 			if(reload_certificate){
 				reload_certificate = 0;
-				SSL_CTX_free(ctx);
-				ctx = NULL;
-				if(init_SSL(&ctx) == -1){
+				free_SSL_ctxs(&ctxs,active_domains);
+				if(init_SSL(d,active_domains,&ctxs) == -1){
 					fprintf(stderr,"(%s): cannot start SSL context.\n",prog);
 					stop_monitor();
 #ifdef OWN_DB		
@@ -215,12 +225,12 @@ int SSL_work_process(int data_sock)
 				}
 
 				struct Request req = {0};
-				int r = handle_ssl_steps(cds,cli_sock,&req,&ssl_cli,&ctx);
+				int r = handle_ssl_steps(cds,cli_sock,&req,&ssl_cli,&ctxs[0]);
 
 				if(r == -1) goto teardown_a;
                 if(r == BAD_REQ){
                     struct Response res = {0};
-                    if(generate_response(&res, 400, NULL, &req) == -1) goto teardown_a;
+                    if(generate_response(&res, 400, NULL, &req,0) == -1) goto teardown_a;
                     int w = write_cli_SSL(cli_sock, &res, cds);
                     clear_response(&res);
                     clear_request(&req);
@@ -252,7 +262,7 @@ loop:
 	
 				
 					for(j = 0; j < nfds; j++){
-						int r = handle_ssl_steps(cds,events[j].data.fd,&req,&ssl_cli,&ctx);
+						int r = handle_ssl_steps(cds,events[j].data.fd,&req,&ssl_cli,&ctxs[0]);
 
 						if(r == -1){
 							/*shutdown*/
@@ -283,7 +293,7 @@ loop:
 						{
 							struct Response res = {0};
 							/*send a bad request response*/
-							if(generate_response(&res,400,NULL,&req) == -1) {
+							if(generate_response(&res,400,NULL,&req,0) == -1) {
 								clear_response(&res);
 								goto teardown;
 							}
@@ -312,7 +322,7 @@ loop:
 						stop_monitor();
 						clear_request(&req);
 						clean_connecion_data(cds,events[j].data.fd);
-						SSL_CTX_free(ctx);
+						free_SSL_ctxs(&ctxs,active_domains);
 #if OWN_DB
 						close(db_sock);
 #endif
@@ -323,15 +333,13 @@ loop:
 teardown_a:
 			clean_connecion_data(cds,cli_sock);
 			remove_socket_from_monitor(cli_sock);
-			SSL_CTX_free(ctx);
-			ctx = NULL;
+			free_SSL_ctxs(&ctxs,active_domains);
 			stop_monitor();
 			exit(0);
 teardown:
 			remove_socket_from_monitor(cli_sock);
 			clean_connecion_data(cds,events[j].data.fd);
-			SSL_CTX_free(ctx);
-			ctx = NULL;
+			free_SSL_ctxs(&ctxs,active_domains);
 			stop_monitor();
 #if OWN_DB
 			close(db_sock);
@@ -372,8 +380,7 @@ teardown:
 		}
 		}
 	}
-	SSL_CTX_free(ctx);
-	ctx = NULL;
+	free_SSL_ctxs(&ctxs,active_domains);
 	clean_connecion_data(cds,-1);
 	return 0;
 }
@@ -435,9 +442,9 @@ static int process_request(struct Request *req, int cli_sock)
 		if(load_resource_db(req,&cont,work_proc_data_sock) == 400){
 				/*send not found response*/
 				if(cont.cnt_st[0] != '\0'){
-					if(generate_response(&res,404,&cont,req) == -1) break;
+					if(generate_response(&res,404,&cont,req,0) == -1) break;
 				}else{
-					if(generate_response(&res,404,NULL,req) == -1) break;
+					if(generate_response(&res,404,NULL,req,0) == -1) break;
 				}
 
 				int w = 0;
@@ -452,7 +459,7 @@ static int process_request(struct Request *req, int cli_sock)
 				return 0;
 		}
 		/*send 200 response*/
-		if(generate_response(&res,200,&cont,req) == -1) {
+		if(generate_response(&res,200,&cont,req,0) == -1) {
 			clear_content(&cont);
 			clear_response(&res);
 			return 0;
@@ -478,7 +485,7 @@ static int process_request(struct Request *req, int cli_sock)
 			int r = 0;
 			if((r=load_resource(req->resource,&cont,0)) == -1){
 				/*send not found response*/
-				if(generate_response(&res,404,NULL,req) == -1) break;
+				if(generate_response(&res,404,NULL,req,1) == -1) break;
 
 				int w = 0;
 				if((w = write_cli_SSL(cli_sock,&res,cds)) == -1) break;
@@ -493,7 +500,7 @@ static int process_request(struct Request *req, int cli_sock)
 			}
 
 			/*send 200 response*/
-			if(generate_response(&res,OK,&cont,req) == -1) {
+			if(generate_response(&res,OK,&cont,req,1) == -1) {
 				clear_content(&cont);
 				clear_response(&res);
 				return 0;
@@ -525,7 +532,7 @@ static int process_request(struct Request *req, int cli_sock)
 				|| strncmp(req->origin,ORIGIN_DEF,strlen(ORIGIN_DEF)) != 0) {
 			/*send bad request*/
 			/*send a bed request response*/
-			if(generate_response(&res,400,NULL,req) == -1) {
+			if(generate_response(&res,400,NULL,req,1) == -1) {
 				clear_response(&res);
 				return -1;
 			}
@@ -545,7 +552,7 @@ static int process_request(struct Request *req, int cli_sock)
 		}
 
 		/*send a response to the options request*/
-		if(generate_response(&res,200,NULL,req) == -1) break;
+		if(generate_response(&res,200,NULL,req,1) == -1) break;
 
 		clear_request(req);
 		int w = 0;
@@ -567,7 +574,7 @@ static int process_request(struct Request *req, int cli_sock)
 	{
 		struct Response res = {0};
 		/*send a bed request response*/
-		if(generate_response(&res,400,NULL,req) == -1) {
+		if(generate_response(&res,400,NULL,req,0) == -1) {
 			clear_response(&res);
 			return -1;
 		}
@@ -594,7 +601,7 @@ static int process_request(struct Request *req, int cli_sock)
 		fprintf(stderr,"POST branch resource is %s\n",req->resource);		
 		int load_code = load_resource_db(req,&cont,work_proc_data_sock);
 		
-		if(generate_response(&res,load_code,&cont,req) == -1) {
+		if(generate_response(&res,load_code,&cont,req,0) == -1) {
 			clear_content(&cont);
 			clear_response(&res);
 			return 0;
@@ -623,3 +630,26 @@ static int process_request(struct Request *req, int cli_sock)
 	return -1;
 }
 
+static int sni_callback(SSL *ssl, int *ad, void *args)
+{
+	struct SNI_config *cfg = args;
+	const char *hostname = SSL_get_servername(ssl,TLSEXT_NAMETYPE_host_name);
+	if(!hostname){
+		*ad = SSL_AD_UNRECOGNIZED_NAME;
+		return SSL_TLSEXT_ERR_ALERT_FATAL;
+	}
+
+	
+	for(int i = 0; i < cfg->domain_count; ++i){
+			if(strcasecmp(hostname,cfg->domains[i]) == 0){
+				if(!SSL_set_SSL_CTX(ssl,cfg->ctxs[i])){
+					*ad = SSL_AD_UNRECOGNIZED_NAME;
+					return SSL_TLSEXT_ERR_ALERT_FATAL;
+				}
+				return SSL_TLSEXT_ERR_OK;
+			}
+	}	
+	
+	*ad = SSL_AD_UNRECOGNIZED_NAME;
+	return SSL_TLSEXT_ERR_ALERT_FATAL;
+}

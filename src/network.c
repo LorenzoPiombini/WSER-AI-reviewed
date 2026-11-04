@@ -22,16 +22,17 @@
 #include "response.h"       
 #include "request.h"       
 #include "monitor.h"       
+#include "default.h"       
 
 char cache_id[] = "wser";
-SSL_CTX *ctx = NULL;
+SSL_CTX *ctx_client = NULL;
 SSL *ssl_client = NULL;
 
 #define USE_HTTPS 0
 #define DNS_SERVER "8.8.8.8"
 
 static char prog[] = "wser";
-static int SSL_client_setup(SSL_CTX **ctx);
+static int SSL_client_setup(SSL_CTX **ctx_client);
 static int handle_client_IO(SSL *ssl, int ret);
 static int wait_for_activity(SSL *ssl, int w_r);
 static long read_hex_for_transfer_encoding(char *, long *);
@@ -45,58 +46,118 @@ static char *convert_query_format_domain_to_string(uint8_t* formatted_domain);
 
 struct Connection_data cds[MAX_CON_DAT_ARR] = {0};
 
-int init_SSL(SSL_CTX **ctx){
+int init_SSL(char** domains, int active_domain, SSL_CTX *** ctxs){
 	long opts;
+	/*certificates_path is initialized to 0 in default.c
+		certificates_path is already bounded to PATH_MAX
+		so we are good*/
+	int base_path_len = (int)strlen(certificates_path);
+	char build_path[PATH_MAX] = {0};
+	strncpy(build_path,certificates_path,base_path_len);
 
-	*ctx = SSL_CTX_new(TLS_server_method());
-	if(!(*ctx)) {
-		fprintf(stderr,"failed to create SSL context");
-		return -1;
+	unsigned char sid[EVP_MAX_MD_SIZE];
+	*ctxs =(SSL_CTX**)calloc(active_domain,sizeof(**ctxs));
+	if(!(*ctxs)) return -1;
+	/*genrates the SSL contest per domain*/
+	for(int i = 0; i < active_domain; i++){
+		
+		(*ctxs)[i] = SSL_CTX_new(TLS_server_method());
+		if(!((*ctxs)[i])) {
+			fprintf(stderr,"failed to create SSL context");
+			goto failed;
+		}
+
+
+		if(!SSL_CTX_set_min_proto_version((*ctxs)[i],TLS1_2_VERSION)) {
+			fprintf(stderr,"failed to set minimum TLS version\n");
+			goto failed;
+		}
+
+		/*
+		 * setting the option for the SSL context
+		 *
+		 * for documentation on what this option are please see
+		 * openSSL documentaion at 
+		 * https://docs.openssl.org/master/man7/ossl-guide-tls-server-block/
+		 * or 
+		 * https://github.com/openssl/openssl/blob/master/demos/guide/tls-server-block.c 
+		 **/
+
+		opts = SSL_OP_NO_RENEGOTIATION;
+		opts |= SSL_OP_CIPHER_SERVER_PREFERENCE;
+
+		/*apply the selction options */
+		SSL_CTX_set_options((*ctxs)[i], opts);
+
+		
+		int d_len = strlen(domains[i]);	
+		if(base_path_len + d_len > PATH_MAX)goto failed;
+	
+		strncpy(&build_path[base_path_len],domains[i],d_len);
+	
+		int custom_path_len =  base_path_len +  d_len;
+		if(custom_path_len + 1 >= PATH_MAX) goto failed;
+
+		build_path[custom_path_len++] = '/';
+	
+		int chain_len = (int)strlen("fullchain.pem");	
+		if(custom_path_len + chain_len >= PATH_MAX) goto failed;
+
+		strncpy(&build_path[custom_path_len],"fullchain.pem",chain_len);
+		
+		if(SSL_CTX_use_certificate_chain_file((*ctxs)[i],build_path) <= 0 ) {
+			fprintf(stderr,"error use certificate.\n");
+			goto failed;
+		}
+
+		int privat_len = (int)strlen("privkey.pem");	
+		if(custom_path_len + privat_len >= PATH_MAX) goto failed;
+		strncpy(&build_path[custom_path_len],"privkey.pem",privat_len);
+		custom_path_len += privat_len;
+		build_path[custom_path_len] = '\0';
+
+		if(SSL_CTX_use_PrivateKey_file((*ctxs)[i], build_path,SSL_FILETYPE_PEM) <= 0) {
+			fprintf(stderr,"error use privatekey ");
+			goto failed;
+		}
+		/*zerod out the portion that we reuse next iteration*/
+		memset(&build_path[base_path_len],0,PATH_MAX - base_path_len);
+
+		if (SSL_CTX_check_private_key((*ctxs)[i]) != 1) {
+			fprintf(stderr, "Certificate/private key mismatch\n");
+			goto failed;
+		}
+		/*create an unique session id */
+		unsigned int sid_len = 0;
+		if (EVP_Digest(domains[i],d_len,sid,&sid_len,EVP_sha256(),NULL) != 1) goto failed;
+		if (SSL_CTX_set_session_id_context((*ctxs)[i],(void*)sid,sid_len) != 1) goto failed;
+	
+		SSL_CTX_set_session_cache_mode((*ctxs)[i],SSL_SESS_CACHE_SERVER);
+		SSL_CTX_sess_set_cache_size((*ctxs)[i], 1024);
+		SSL_CTX_set_timeout((*ctxs)[i],3600);
+		SSL_CTX_set_verify((*ctxs)[i],SSL_VERIFY_NONE, NULL);
+
+		if (SSL_CTX_set_cipher_list((*ctxs)[i],"ECDHE+AESGCM:ECDHE+CHACHA20:!aNULL:!eNULL:!MD5:!RC4:!3DES") != 1) goto failed;
+
+		if (SSL_CTX_set_ciphersuites((*ctxs)[i],"TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256") != 1) goto failed;
+
+		memset(sid,0,EVP_MAX_MD_SIZE);
 	}
-
-
-	if(!SSL_CTX_set_min_proto_version(*ctx,TLS1_2_VERSION)) {
-		fprintf(stderr,"failed to set minimum TLS version\n");
-		SSL_CTX_free(*ctx);
-		return -1;
-	}
-
-	/*
-	 * setting the option for the SSL context
-	 *
-	 * for documentation on what this option are please see
-	 * openSSL documentaion at 
-	 * https://docs.openssl.org/master/man7/ossl-guide-tls-server-block/
-	 * or 
-	 * https://github.com/openssl/openssl/blob/master/demos/guide/tls-server-block.c 
-	 **/
-
-	opts = SSL_OP_IGNORE_UNEXPECTED_EOF;
-	opts |= SSL_OP_NO_RENEGOTIATION;
-	opts |= SSL_OP_CIPHER_SERVER_PREFERENCE;
-
-	/*apply the selction options */
-	SSL_CTX_set_options(*ctx, opts);
-
-	/*NOTE: this will always change! depends on the implementation*/
-	if(SSL_CTX_use_certificate_chain_file(*ctx,"/home/lpiombini/local_cert/server.crt") <= 0 ) {
-		fprintf(stderr,"error use certificate.\n");
-		return -1;
-	}
-
-	if(SSL_CTX_use_PrivateKey_file(*ctx, "/home/lpiombini/local_cert/server.key",SSL_FILETYPE_PEM) <= 0) {
-		fprintf(stderr,"error use privatekey ");
-		return -1;
-	}
-
-	SSL_CTX_set_session_id_context(*ctx,(void*)cache_id,sizeof(cache_id));
-	SSL_CTX_set_session_cache_mode(*ctx,SSL_SESS_CACHE_SERVER);
-	SSL_CTX_sess_set_cache_size(*ctx, 1024);
-	SSL_CTX_set_timeout(*ctx,3600);
-	SSL_CTX_set_verify(*ctx,SSL_VERIFY_NONE, NULL);
-	SSL_CTX_set_cipher_list(*ctx,"ECDHE+AESGCM:ECDHE+CHACHA20:!aNULL:!eNULL:!MD5:!RC4:!3DES");
-	SSL_CTX_set_ciphersuites(*ctx,"TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256");
 	return 0;
+
+failed:
+	free_SSL_ctxs(ctxs,active_domain);
+	return -1;
+}
+
+void *free_SSL_ctxs(SSL_CTX ***ctxs, int active_domain)
+{
+	for(int i = 0; i < active_domain; ++i){
+		SSL_CTX_free((*ctxs)[i]);
+		(*ctxs)[i] = NULL;
+	}
+	free(*ctxs);
+	*ctxs = NULL;
 }
 
 int listen_port_80(uint16_t *port)
@@ -704,18 +765,18 @@ void stop_listening(int sock_fd)
 }
 
 void SSL_client_close(){
-	SSL_CTX_free(ctx);
+	SSL_CTX_free(ctx_client);
 	SSL_free(ssl_client);
 }
 int SSL_client_config(){
-	if(SSL_client_setup(&ctx) != 0){
-		if(ctx)
-			SSL_CTX_free(ctx);
+	if(SSL_client_setup(&ctx_client) != 0){
+		if(ctx_client)
+			SSL_CTX_free(ctx_client);
 
 		return -1;
 	}
-	if((ssl_client = SSL_new(ctx)) == NULL){
-		SSL_CTX_free(ctx);
+	if((ssl_client = SSL_new(ctx_client)) == NULL){
+		SSL_CTX_free(ctx_client);
 		return -1;
 	}
 	return 0;
@@ -737,14 +798,14 @@ int perform_http_request(char *URL, char *req, char **body)
 
 	if(secure){
 		if(!ssl_client){
-			if(SSL_client_setup(&ctx) != 0){
-				if(ctx)
-					SSL_CTX_free(ctx);
+			if(SSL_client_setup(&ctx_client) != 0){
+				if(ctx_client)
+					SSL_CTX_free(ctx_client);
 
 				return -1;
 			}
-			if((ssl_client = SSL_new(ctx)) == NULL){
-				SSL_CTX_free(ctx);
+			if((ssl_client = SSL_new(ctx_client)) == NULL){
+				SSL_CTX_free(ctx_client);
 				return -1;
 			}
 		}else{

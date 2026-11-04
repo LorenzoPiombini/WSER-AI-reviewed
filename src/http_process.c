@@ -311,7 +311,7 @@ static int process_request(struct Request *req, int cli_sock,int result_of_http_
 					int r = 0;
 					if((r = load_resource(req->resource,&cont,0)) == -1){
 						/*send not found response*/
-						if(generate_response(&res,404,&cont,req) == -1) break;
+						if(generate_response(&res,404,&cont,req,0) == -1) break;
 
 						int w = 0;
 						if(( w = write_cli_sock(cli_sock,&res)) == -1) break;
@@ -342,7 +342,7 @@ static int process_request(struct Request *req, int cli_sock,int result_of_http_
 					}
 
 					/*send 200 response*/
-					if(generate_response(&res,OK,&cont,req) == -1) {
+					if(generate_response(&res,OK,&cont,req,0) == -1) {
 						/*TODO: server errror*/
 						clear_response(&res);
 						clear_content(&cont);
@@ -374,7 +374,7 @@ static int process_request(struct Request *req, int cli_sock,int result_of_http_
 					return 0;
 				}else{
 					/*send 301 response*/
-					if(generate_response(&res,301,NULL,req) == -1) break;
+					if(generate_response(&res,301,NULL,req,0) == -1) break;
 
 					int w = 0;
 					if((w = write_cli_sock(cli_sock,&res)) == -1) break;
@@ -419,7 +419,7 @@ static int process_request(struct Request *req, int cli_sock,int result_of_http_
 				int r = 0;
 				if((r=load_resource(req->resource,&cont,0)) == -1){
 					/*send not found response*/
-					if(generate_response(&res,404,&cont,req) == -1) break;
+					if(generate_response(&res,404,&cont,req,0) == -1) break;
 
 					int w = 0;
 					if(( w = write_cli_sock(cli_sock,&res)) == -1) break;
@@ -457,7 +457,7 @@ static int process_request(struct Request *req, int cli_sock,int result_of_http_
 			}
 
 			/*send 200 response*/
-			if(generate_response(&res,OK,&cont,req) == -1) {
+			if(generate_response(&res,OK,&cont,req,0) == -1) {
 				/*TODO: server errror*/
 				clear_content(&cont);
 				clear_response(&res);
@@ -493,7 +493,7 @@ static int process_request(struct Request *req, int cli_sock,int result_of_http_
 						int r = 0;
 						if((r=load_resource(req->resource,&cont,0)) == -1){
 							/*send not found response*/
-							if(generate_response(&res,404,&cont,req) == -1) break;
+							if(generate_response(&res,404,&cont,req,0) == -1) break;
 
 							int w = 0;
 							if(( w = write_cli_sock(cli_sock,&res)) == -1) break;
@@ -524,7 +524,7 @@ static int process_request(struct Request *req, int cli_sock,int result_of_http_
 						}
 
 						/*send 200 response*/
-						if(generate_response(&res,OK,&cont,req) == -1) {
+						if(generate_response(&res,OK,&cont,req,0) == -1) {
 							/*TODO: server errror*/
 							clear_response(&res);
 							clear_content(&cont);
@@ -556,7 +556,7 @@ static int process_request(struct Request *req, int cli_sock,int result_of_http_
 						return 0;
 					}else{
 						/*send 301 response*/
-						if(generate_response(&res,301,NULL,req) == -1) break;
+						if(generate_response(&res,301,NULL,req,0) == -1) break;
 
 						int w = 0;
 						if(( w = write_cli_sock(cli_sock,&res)) == -1) break;
@@ -594,7 +594,7 @@ static int process_request(struct Request *req, int cli_sock,int result_of_http_
 
 
 				/*send a response to the options request*/
-				if(generate_response(&res,200,NULL,req) == -1) break;
+				if(generate_response(&res,200,NULL,req,0) == -1) break;
 
 				int w = 0;
 				if(( w = write_cli_sock(cli_sock,&res)) == -1) break;
@@ -631,7 +631,7 @@ static int process_request(struct Request *req, int cli_sock,int result_of_http_
 						int r =0;
 						if((r=load_resource(req->resource,&cont,0)) == -1){
 							/*send not found response*/
-							if(generate_response(&res,404,&cont,req) == -1) break;
+							if(generate_response(&res,404,&cont,req,0) == -1) break;
 
 							int w = 0;
 							if(( w = write_cli_sock(cli_sock,&res)) == -1) break;
@@ -662,7 +662,7 @@ static int process_request(struct Request *req, int cli_sock,int result_of_http_
 						}
 
 						/*send 200 response*/
-						if(generate_response(&res,OK,&cont,req) == -1) {
+						if(generate_response(&res,OK,&cont,req,0) == -1) {
 							/*TODO: server errror*/
 							clear_response(&res);
 							clear_content(&cont);
@@ -694,7 +694,7 @@ static int process_request(struct Request *req, int cli_sock,int result_of_http_
 						return 0;
 					}else{
 						/*send 301 response*/
-						if(generate_response(&res,301,NULL,req) == -1) break;
+						if(generate_response(&res,301,NULL,req,0) == -1) break;
 
 						int w = 0;
 						if(( w = write_cli_sock(cli_sock,&res)) == -1) break;
@@ -725,7 +725,7 @@ static int process_request(struct Request *req, int cli_sock,int result_of_http_
 					}
 					break;
 				}
-				if(generate_response(&res,400,NULL,req) == -1) break;
+				if(generate_response(&res,400,NULL,req,0) == -1) break;
 
 				int w = 0;
 				if(( w = write_cli_sock(cli_sock,&res)) == -1) break;
@@ -751,7 +751,7 @@ static int process_request(struct Request *req, int cli_sock,int result_of_http_
 
 bad_request:
 	/*send a bed request response*/
-	if(generate_response(&res,400,NULL,req) == -1) return -1;
+	if(generate_response(&res,400,NULL,req,0) == -1) return -1;
 
 	int w = 0;
 	if(( w = write_cli_sock(cli_sock,&res)) == -1) return -1;
